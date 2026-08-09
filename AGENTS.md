@@ -2,8 +2,6 @@
 
 React Native (Expo) frontend for OneRep gym training app.
 
-> **Follow [`CONVENTIONS.md`](https://github.com/vladgrskkh/gym/blob/main/CONVENTIONS.md) for shared conventions. Frontend-specific conventions below.**
-
 ## Stack
 - React Native (Expo SDK 52+), React Native Web, TypeScript
 - expo-sqlite, expo-secure-store, expo-camera, expo-image-picker
