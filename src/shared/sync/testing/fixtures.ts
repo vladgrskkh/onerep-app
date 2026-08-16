@@ -38,12 +38,17 @@ export class FakeSyncStore implements SyncStore {
     if (!tableRows) {
       return;
     }
+    const existing = tableRows.get(id);
     if (server.id !== id) {
       tableRows.delete(id);
     }
+    // Mirrors LocalDb.markSynced: the server row replaces the local one (its
+    // id and timestamps are server-assigned) but the client_id is carried
+    // through so lookups by client id keep working after the push.
     tableRows.set(server.id, {
-      ...(tableRows.get(server.id) ?? {}),
+      ...(existing ?? {}),
       ...server,
+      client_id: (existing as { client_id?: string } | undefined)?.client_id ?? id,
       is_dirty: 0,
       operation: null,
       last_synced_at: (server as { updated_at?: string }).updated_at ?? null,
@@ -84,6 +89,7 @@ export class FakeSyncStore implements SyncStore {
 }
 
 export function dirtyLocalRow(overrides: Partial<LocalRow> & { id: string }): LocalRow {
+  const withClientId = overrides as { client_id?: string };
   return {
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
@@ -91,6 +97,7 @@ export function dirtyLocalRow(overrides: Partial<LocalRow> & { id: string }): Lo
     operation: 'create',
     last_synced_at: null,
     ...overrides,
+    client_id: withClientId.client_id ?? overrides.id,
   } as LocalRow;
 }
 

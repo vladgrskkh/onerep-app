@@ -25,6 +25,16 @@ describe('SCHEMA_SQL', () => {
     expect(SCHEMA_SQL).toContain('muscle_groups TEXT');
   });
 
+  it('adds a client_id column to the re-keyed sync tables', () => {
+    for (const table of ['exercises', 'templates', 'workouts']) {
+      const start = SCHEMA_SQL.indexOf(`CREATE TABLE IF NOT EXISTS ${table}`);
+      const end = SCHEMA_SQL.indexOf(');', start);
+      const ddl = SCHEMA_SQL.slice(start, end);
+      expect(ddl).toContain('client_id TEXT');
+      expect(SCHEMA_SQL).toContain(`CREATE INDEX IF NOT EXISTS idx_${table}_client_id ON ${table} (client_id)`);
+    }
+  });
+
   it('stores nested children of templates and workouts as JSON text columns', () => {
     expect(SCHEMA_SQL).toMatch(/templates[\s\S]*exercises TEXT/);
     expect(SCHEMA_SQL).toMatch(/templates[\s\S]*media TEXT/);

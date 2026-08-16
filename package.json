@@ -8,6 +8,7 @@
     "@react-navigation/native": "^7.3.16",
     "@tanstack/react-query": "^5.101.4",
     "expo": "~57.0.13",
+    "expo-haptics": "~57.0.1",
     "expo-image-picker": "~57.0.10",
     "expo-secure-store": "~57.0.1",
     "expo-sqlite": "~57.0.1",
