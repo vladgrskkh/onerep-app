@@ -401,6 +401,30 @@ describe('LocalDb', () => {
     expect(db.getLastSyncedAt()).toBeNull();
   });
 
+  it('setProgressCache upserts a JSON payload and getProgressCache reads it back', () => {
+    const db = new LocalDb(conn);
+    db.setProgressCache('progress:1rm:e1', '[{"date":"2026-01-01","estimated_1rm":100}]');
+
+    expect(mockConn().runSync).toHaveBeenCalledWith(
+      'INSERT INTO progress_cache (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+      'progress:1rm:e1',
+      '[{"date":"2026-01-01","estimated_1rm":100}]',
+      expect.any(String),
+    );
+
+    mockConn().getFirstSync.mockReturnValue({ value: '[{"estimated_1rm":100}]' });
+    expect(db.getProgressCache('progress:1rm:e1')).toBe('[{"estimated_1rm":100}]');
+    expect(mockConn().getFirstSync).toHaveBeenCalledWith(
+      'SELECT value FROM progress_cache WHERE key = ?',
+      'progress:1rm:e1',
+    );
+  });
+
+  it('getProgressCache returns null when nothing is cached', () => {
+    const db = new LocalDb(conn);
+    expect(db.getProgressCache('progress:volume')).toBeNull();
+  });
+
   it('upsertBodyWeight serializes a weight entry and marks it dirty on create', () => {
     const db = new LocalDb(conn);
     db.upsertBodyWeight(bodyWeight, { is_dirty: 1, operation: 'create' });

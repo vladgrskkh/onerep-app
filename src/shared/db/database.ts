@@ -721,6 +721,28 @@ export class LocalDb implements SyncStore {
   setLastSyncedAt(value: string): void {
     this.conn.runSync(UPSERT_SYNC_STATE_SQL, value);
   }
+
+  // -- progress cache --------------------------------------------------------------
+  // Server-computed progress payloads (1RM, volume) are not pulled by the
+  // sync engine. Screens store the last successful fetch here so offline
+  // opens still have something to render; values are JSON strings.
+
+  getProgressCache(key: string): string | null {
+    const row = this.conn.getFirstSync<{ value: string }>(
+      'SELECT value FROM progress_cache WHERE key = ?',
+      key,
+    );
+    return row?.value ?? null;
+  }
+
+  setProgressCache(key: string, value: string): void {
+    this.conn.runSync(
+      'INSERT INTO progress_cache (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+      key,
+      value,
+      new Date().toISOString(),
+    );
+  }
 }
 
 export const DB_NAME = 'onerep.db';

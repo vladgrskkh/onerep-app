@@ -3,8 +3,15 @@ import { describe, expect, it } from '@jest/globals';
 import { SCHEMA_SQL, SYNC_TABLES } from '../schema';
 
 describe('SCHEMA_SQL', () => {
-  it('creates all five tables', () => {
-    for (const table of ['exercises', 'templates', 'workouts', 'body_weights', 'sync_state']) {
+  it('creates all tables', () => {
+    for (const table of [
+      'exercises',
+      'templates',
+      'workouts',
+      'body_weights',
+      'sync_state',
+      'progress_cache',
+    ]) {
       expect(SCHEMA_SQL).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
     }
   });
