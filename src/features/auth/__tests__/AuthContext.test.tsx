@@ -112,6 +112,12 @@ function press(instance: ReturnType<typeof create>, testID: string) {
   });
 }
 
+async function flushAsync() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 function makeJwt(userId: string): string {
   const payload = Buffer.from(JSON.stringify({ user_id: userId, sub: userId })).toString('base64');
   return `header.${payload}.sig`;
@@ -142,7 +148,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
 
     expect(instance!.root.findByProps({ testID: 'user' }).props.children).toBe('Ann');
@@ -154,7 +160,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
 
     expect(instance!.root.findByProps({ testID: 'user' }).props.children).toBe('none');
@@ -172,7 +178,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
     await press(instance!, 'doLogin');
 
@@ -197,7 +203,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
     await press(instance!, 'doRegister');
 
@@ -217,7 +223,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
     await press(instance!, 'doLogin');
 
@@ -239,7 +245,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
     await press(instance!, 'doRefresh');
 
@@ -258,7 +264,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
     await press(instance!, 'doRefresh');
 
@@ -278,7 +284,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
     await press(instance!, 'doLogout');
 
@@ -325,7 +331,7 @@ describe('AuthProvider', () => {
     let instance: ReturnType<typeof create> | null = null;
     await act(async () => {
       instance = renderHarness();
-      await Promise.resolve();
+      await flushAsync();
     });
 
     await act(async () => {
