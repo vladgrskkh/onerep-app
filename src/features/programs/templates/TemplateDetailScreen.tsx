@@ -45,7 +45,11 @@ export function TemplateDetailScreen({
     );
   }
 
-  const refresh = () => setTemplate(getLocalDb().getTemplate(template.id));
+  const refresh = () =>
+    setTemplate(
+      getLocalDb().findTemplateByClientID(template.client_id ?? template.id) ??
+        getLocalDb().getTemplate(template.id),
+    );
 
   const startWorkout = () => {
     if (!user) {
@@ -64,10 +68,14 @@ export function TemplateDetailScreen({
     setError(null);
     try {
       // Publishing needs the server-assigned id: push a pending create first,
-      // then re-resolve the row through its client-generated created_at.
+      // then re-resolve the row through its client_id (the server assigns its
+      // own id and timestamps, so the client id is the only stable handle).
       await sync();
-      const pushed = getLocalDb().findTemplateByCreatedAt(template.created_at) ?? template;
-      const published = await gymApi.templates.publish(pushed.id);
+      const pushed = getLocalDb().findTemplateByClientID(template.client_id ?? template.id);
+      if (pushed && pushed.is_dirty === 1) {
+        throw new Error('template has not reached the server yet');
+      }
+      const published = await gymApi.templates.publish((pushed ?? template).id);
       getLocalDb().upsertRemote('templates', published);
       refresh();
     } catch (publishError) {
@@ -96,7 +104,11 @@ export function TemplateDetailScreen({
       version: 1,
       exercises: template.exercises,
     };
-    getLocalDb().upsertTemplate(copy, { is_dirty: 1, operation: 'create' });
+    getLocalDb().upsertTemplate(copy, {
+      is_dirty: 1,
+      operation: 'create',
+      client_id: copy.id,
+    });
     void sync();
     onForked?.(copy);
   };

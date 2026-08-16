@@ -4,16 +4,20 @@ import { act, create } from 'react-test-renderer';
 
 import type { WorkoutLocalRow } from '../../../shared/db/database';
 
+// The workout after its create op was pushed: the row was re-keyed to the
+// server id with server-assigned timestamps, and the client_id (the id the
+// screen was navigated with) was carried through.
 const syncedWorkout: WorkoutLocalRow = {
-  id: 'w1',
+  id: 'server-w1',
+  client_id: 'w1',
   user_id: 'u1',
   template_id: 't1',
-  started_at: '2026-01-01T08:00:00Z',
-  created_at: '2026-01-01T08:00:00Z',
-  updated_at: '2026-01-01T08:00:00Z',
+  started_at: '2026-02-03T09:00:00Z',
+  created_at: '2026-02-03T09:00:00Z',
+  updated_at: '2026-02-03T09:00:00Z',
   is_dirty: 0,
   operation: null,
-  last_synced_at: null,
+  last_synced_at: '2026-02-03T09:00:00Z',
   exercises: [
     {
       id: 'we1',
@@ -27,8 +31,11 @@ const syncedWorkout: WorkoutLocalRow = {
 };
 
 let mockRow: WorkoutLocalRow | null;
-const mockGetWorkout = jest.fn(() => mockRow);
-const mockFindWorkoutByStartedAt = jest.fn(() => null);
+let mockLastSyncAt: string | null = null;
+// After the push, the old client-id row is gone from the id index; the row
+// is only reachable via its carried client_id.
+const mockGetWorkout = jest.fn(() => null);
+const mockFindWorkoutByClientID = jest.fn(() => mockRow);
 const mockGetExercises = jest.fn(() => [
   { id: 'e1', name: 'Bench Press' },
   { id: 'e2', name: 'Squat' },
@@ -41,7 +48,7 @@ const mockSync = jest.fn(async () => ({ lastSyncedAt: '2026-01-02T00:00:00Z' }))
 jest.mock('../../../shared/db/database', () => ({
   getLocalDb: jest.fn(() => ({
     getWorkout: mockGetWorkout,
-    findWorkoutByStartedAt: mockFindWorkoutByStartedAt,
+    findWorkoutByClientID: mockFindWorkoutByClientID,
     getExercises: mockGetExercises,
     getTemplate: mockGetTemplate,
     upsertWorkout: mockUpsertWorkout,
@@ -50,7 +57,12 @@ jest.mock('../../../shared/db/database', () => ({
 }));
 
 jest.mock('../../../shared/sync/useSync', () => ({
-  useSync: () => ({ sync: mockSync, isSyncing: false, lastSyncAt: null, lastError: null }),
+  useSync: () => ({
+    sync: mockSync,
+    isSyncing: false,
+    lastSyncAt: mockLastSyncAt,
+    lastError: null,
+  }),
 }));
 
 jest.mock('../../../shared/api/gym', () => ({
@@ -121,6 +133,7 @@ async function logSet(instance: ReturnType<typeof create>, weight = '110', reps 
 beforeEach(() => {
   jest.clearAllMocks();
   mockRow = syncedWorkout;
+  mockLastSyncAt = null;
   mockUpsertWorkout.mockReturnValue(undefined);
   mockUpsertRemote.mockReturnValue(undefined);
   mockLogSet.mockResolvedValue({
@@ -164,7 +177,7 @@ describe('ActiveWorkoutScreen', () => {
 
     await logSet(instance);
 
-    expect(mockLogSet).toHaveBeenCalledWith('w1', 'we1', {
+    expect(mockLogSet).toHaveBeenCalledWith('server-w1', 'we1', {
       weight_kg: 110,
       reps: 5,
       is_warmup: false,
@@ -172,6 +185,7 @@ describe('ActiveWorkoutScreen', () => {
     expect(instance.root.findByProps({ testID: 'workout.prBadge' })).toBeTruthy();
     expect(mockUpsertWorkout).toHaveBeenCalledWith(
       expect.objectContaining({
+        id: 'server-w1',
         exercises: expect.arrayContaining([
           expect.objectContaining({
             id: 'we1',
@@ -179,7 +193,7 @@ describe('ActiveWorkoutScreen', () => {
           }),
         ]),
       }),
-      { is_dirty: 0, operation: undefined },
+      { is_dirty: 0, operation: undefined, client_id: 'w1' },
     );
   });
 
@@ -199,14 +213,15 @@ describe('ActiveWorkoutScreen', () => {
     expect(instance.root.findByProps({ testID: 'workout.restTimer' })).toBeTruthy();
     expect(instance.root.findByProps({ testID: 'workout.restTimerLabel' })).toBeTruthy();
     expect(mockLogSet).toHaveBeenCalledWith(
-      'w1',
+      'server-w1',
       'we1',
       expect.objectContaining({ rest_seconds: 90 }),
     );
   });
 
   it('keeps a pending-create workout local without calling the logSet API', async () => {
-    mockRow = { ...syncedWorkout, is_dirty: 1, operation: 'create' };
+    // Pre-push state: the row id IS the client_id and the create op is pending.
+    mockRow = { ...syncedWorkout, id: 'w1', is_dirty: 1, operation: 'create' };
     const instance = await renderActive();
 
     await logSet(instance);
@@ -214,11 +229,45 @@ describe('ActiveWorkoutScreen', () => {
     expect(mockLogSet).not.toHaveBeenCalled();
     expect(mockUpsertWorkout).toHaveBeenCalledWith(
       expect.objectContaining({
+        id: 'w1',
         exercises: expect.arrayContaining([
           expect.objectContaining({ sets: expect.arrayContaining([expect.anything()]) }),
         ]),
       }),
-      { is_dirty: 1, operation: 'create' },
+      { is_dirty: 1, operation: 'create', client_id: 'w1' },
+    );
+  });
+
+  it('resolves the re-keyed row by client_id after a push and never replays the create', async () => {
+    // The screen mounts while the create op is still pending...
+    mockRow = { ...syncedWorkout, id: 'w1', is_dirty: 1, operation: 'create' };
+    const instance = await renderActive();
+
+    // ...then the sync engine pushes it: the local row is deleted and replaced
+    // by the server row (server id, server started_at, client_id carried).
+    // A stale-timestamp or stale-id lookup would miss this row, and the next
+    // set log would re-insert a dirty create -> a duplicate workout on the
+    // server.
+    mockRow = syncedWorkout;
+    mockLastSyncAt = '2026-02-03T10:00:00Z';
+    await act(async () => {
+      instance.update(<ActiveWorkoutScreen workoutId="w1" />);
+      await Promise.resolve();
+    });
+
+    mockUpsertWorkout.mockClear();
+    await logSet(instance);
+
+    expect(mockFindWorkoutByClientID).toHaveBeenCalledWith('w1');
+    expect(mockLogSet).toHaveBeenCalledWith('server-w1', 'we1', {
+      weight_kg: 110,
+      reps: 5,
+      is_warmup: false,
+    });
+    // No create re-insert: the only local write carries the synced row.
+    expect(mockUpsertWorkout).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ operation: 'create' }),
     );
   });
 
@@ -233,12 +282,13 @@ describe('ActiveWorkoutScreen', () => {
       await instance.root.findByProps({ testID: 'workout.addExercise.e2' }).props.onPress();
     });
 
-    expect(mockAddExercise).toHaveBeenCalledWith('w1', { exercise_id: 'e2' });
+    expect(mockAddExercise).toHaveBeenCalledWith('server-w1', { exercise_id: 'e2' });
     expect(mockUpsertWorkout).toHaveBeenCalledWith(
       expect.objectContaining({
+        id: 'server-w1',
         exercises: expect.arrayContaining([expect.objectContaining({ id: 'we2' })]),
       }),
-      { is_dirty: 0, operation: undefined },
+      { is_dirty: 0, operation: undefined, client_id: 'w1' },
     );
   });
 
@@ -254,7 +304,7 @@ describe('ActiveWorkoutScreen', () => {
       await instance!.root.findByProps({ testID: 'workout.finish' }).props.onPress();
     });
 
-    expect(mockFinish).toHaveBeenCalledWith('w1');
+    expect(mockFinish).toHaveBeenCalledWith('server-w1');
     expect(onWorkoutFinished).toHaveBeenCalledWith(
       expect.objectContaining({ finished_at: '2026-01-01T09:00:00Z' }),
     );

@@ -6,16 +6,16 @@ import type { Exercise } from '../../../../shared/api/gym';
 import type { ExerciseLocalRow } from '../../../../shared/db/database';
 
 const mockUpsertExercise = jest.fn<
-  (exercise: Exercise, sync?: { is_dirty?: number; operation?: string }) => void
+  (exercise: Exercise, sync?: { is_dirty?: number; operation?: string; client_id?: string }) => void
 >();
-const mockFindExerciseByCreatedAt = jest.fn<(createdAt: string) => ExerciseLocalRow | null>();
+const mockFindExerciseByClientID = jest.fn<(clientId: string) => ExerciseLocalRow | null>();
 const mockUpsertRemote = jest.fn<(table: string, row: unknown) => void>();
 const mockSync = jest.fn(async () => ({ lastSyncedAt: '2026-01-02T00:00:00Z' }));
 
 jest.mock('../../../../shared/db/database', () => ({
   getLocalDb: jest.fn(() => ({
     upsertExercise: mockUpsertExercise,
-    findExerciseByCreatedAt: mockFindExerciseByCreatedAt,
+    findExerciseByClientID: mockFindExerciseByClientID,
     upsertRemote: mockUpsertRemote,
   })),
 }));
@@ -82,7 +82,7 @@ async function submit(instance: ReturnType<typeof create>) {
 beforeEach(() => {
   jest.clearAllMocks();
   mockUpsertExercise.mockReturnValue(undefined);
-  mockFindExerciseByCreatedAt.mockReturnValue(null);
+  mockFindExerciseByClientID.mockReturnValue(null);
   mockSync.mockResolvedValue({ lastSyncedAt: '2026-01-02T00:00:00Z' });
   mockLaunchImageLibrary.mockResolvedValue({ canceled: true, assets: [] });
 });
@@ -115,7 +115,7 @@ describe('CreateExerciseScreen', () => {
         is_built_in: false,
         created_by_user_id: 'u1',
       }),
-      { is_dirty: 1, operation: 'create' },
+      { is_dirty: 1, operation: 'create', client_id: expect.any(String) },
     );
     expect(mockSync).toHaveBeenCalledTimes(1);
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ name: 'Dumbbell Fly' }));
@@ -149,15 +149,23 @@ describe('CreateExerciseScreen', () => {
       canceled: false,
       assets: [{ uri: 'file:///tmp/photo.jpg', mimeType: 'image/jpeg', fileName: 'photo.jpg' }],
     });
-    const pushed: Exercise = {
+    // Real server behavior: after the push the row has a server-assigned id
+    // AND server-assigned timestamps; only the client_id survives. The screen
+    // must resolve the pushed row via client_id — a created_at lookup would
+    // miss (server overwrote it) and the upload would dead-end.
+    const pushed: ExerciseLocalRow = {
       id: 'server-e1',
+      client_id: 'client-e1',
       name: 'Dumbbell Fly',
       is_built_in: false,
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
+      created_at: '2026-02-03T12:00:00Z',
+      updated_at: '2026-02-03T12:00:00Z',
       version: 1,
+      is_dirty: 0,
+      operation: null,
+      last_synced_at: '2026-02-03T12:00:00Z',
     };
-    mockFindExerciseByCreatedAt.mockReturnValue({ ...pushed, is_dirty: 0, operation: null, last_synced_at: null });
+    mockFindExerciseByClientID.mockReturnValue(pushed);
     mockUploadMedia.mockResolvedValue({
       id: 'media-1',
       s3_key: 'media/server-e1/photo.jpg',
@@ -177,6 +185,8 @@ describe('CreateExerciseScreen', () => {
     await changeText(instance, 'createExercise.name', 'Dumbbell Fly');
     await submit(instance);
 
+    const created = mockUpsertExercise.mock.calls[0]?.[0] as Exercise;
+    expect(mockFindExerciseByClientID).toHaveBeenCalledWith(created.id);
     expect(mockUploadMedia).toHaveBeenCalledWith('server-e1', {
       media_type: 'photo',
       content_type: 'image/jpeg',
@@ -197,15 +207,19 @@ describe('CreateExerciseScreen', () => {
       canceled: false,
       assets: [{ uri: 'file:///tmp/photo.jpg', mimeType: 'image/jpeg', fileName: 'photo.jpg' }],
     });
-    const pushed: Exercise = {
+    const pushed: ExerciseLocalRow = {
       id: 'server-e1',
+      client_id: 'client-e1',
       name: 'Dumbbell Fly',
       is_built_in: false,
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
+      created_at: '2026-02-03T12:00:00Z',
+      updated_at: '2026-02-03T12:00:00Z',
       version: 1,
+      is_dirty: 0,
+      operation: null,
+      last_synced_at: '2026-02-03T12:00:00Z',
     };
-    mockFindExerciseByCreatedAt.mockReturnValue({ ...pushed, is_dirty: 0, operation: null, last_synced_at: null });
+    mockFindExerciseByClientID.mockReturnValue(pushed);
     mockUploadMedia.mockRejectedValue(new Error('offline'));
     const instance = await renderCreate();
 
@@ -215,6 +229,38 @@ describe('CreateExerciseScreen', () => {
     await changeText(instance, 'createExercise.name', 'Dumbbell Fly');
     await submit(instance);
 
+    expect(mockUpsertExercise).toHaveBeenCalled();
+    expect(instance.root.findByProps({ testID: 'createExercise.error' })).toBeTruthy();
+  });
+
+  it('keeps the photo pending with a clear message when the create has not reached the server', async () => {
+    mockLaunchImageLibrary.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'file:///tmp/photo.jpg', mimeType: 'image/jpeg', fileName: 'photo.jpg' }],
+    });
+    // The row is still the local dirty create (offline push): the screen must
+    // not call uploadMedia with the client id, which would 404 on the server.
+    mockFindExerciseByClientID.mockReturnValue({
+      id: 'client-e1',
+      client_id: 'client-e1',
+      name: 'Dumbbell Fly',
+      is_built_in: false,
+      created_at: '2026-02-03T12:00:00Z',
+      updated_at: '2026-02-03T12:00:00Z',
+      version: 1,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    });
+    const instance = await renderCreate();
+
+    await act(async () => {
+      await instance.root.findByProps({ testID: 'createExercise.pickPhoto' }).props.onPress();
+    });
+    await changeText(instance, 'createExercise.name', 'Dumbbell Fly');
+    await submit(instance);
+
+    expect(mockUploadMedia).not.toHaveBeenCalled();
     expect(mockUpsertExercise).toHaveBeenCalled();
     expect(instance.root.findByProps({ testID: 'createExercise.error' })).toBeTruthy();
   });

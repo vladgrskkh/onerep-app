@@ -96,15 +96,21 @@ export function CreateExerciseScreen({ onCreated }: CreateExerciseScreenProps) {
       };
       // Offline-first: write locally as a pending create, then let the sync
       // engine push it. Media upload needs the server-assigned id, so it runs
-      // after the create has been pushed (skipped when offline).
-      getLocalDb().upsertExercise(exercise, { is_dirty: 1, operation: 'create' });
+      // after the create has been pushed. The server assigns its own id and
+      // timestamps; the client_id is the only stable handle back to the
+      // pushed row (skipped when still not synced).
+      getLocalDb().upsertExercise(exercise, {
+        is_dirty: 1,
+        operation: 'create',
+        client_id: exercise.id,
+      });
       await sync();
 
       if (photo) {
         try {
-          const pushed = getLocalDb().findExerciseByCreatedAt(now);
-          if (!pushed) {
-            throw new Error('Exercise has not reached the server yet');
+          const pushed = getLocalDb().findExerciseByClientID(exercise.id);
+          if (!pushed || pushed.is_dirty === 1) {
+            throw new Error('exercise has not reached the server yet');
           }
           await uploadExercisePhoto(pushed.id, photo);
         } catch (uploadError) {

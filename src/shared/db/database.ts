@@ -30,9 +30,17 @@ export interface SyncColumns {
   last_synced_at: string | null;
 }
 
-export type ExerciseLocalRow = Exercise & SyncColumns;
-export type TemplateLocalRow = Template & SyncColumns;
-export type WorkoutLocalRow = Workout & SyncColumns;
+// Upsert options for sync-managed tables. client_id is a client-only stable
+// key: on local create it equals the locally generated row id, and it is
+// carried through the markSynced re-key so screens can resolve the pushed
+// (server-id, server-timestamp) row after a sync.
+export interface UpsertSyncOptions extends Partial<SyncColumns> {
+  client_id?: string;
+}
+
+export type ExerciseLocalRow = Exercise & SyncColumns & { client_id?: string };
+export type TemplateLocalRow = Template & SyncColumns & { client_id?: string };
+export type WorkoutLocalRow = Workout & SyncColumns & { client_id?: string };
 export type BodyWeightLocalRow = BodyWeightEntry & SyncColumns;
 
 export type LocalRow = ExerciseLocalRow | TemplateLocalRow | WorkoutLocalRow | BodyWeightLocalRow;
@@ -41,6 +49,7 @@ export type ServerRow = Exercise | Template | Workout | BodyWeightEntry;
 
 export interface ExerciseRawRow {
   id: string;
+  client_id: string | null;
   name: string;
   description: string | null;
   notes: string | null;
@@ -58,6 +67,7 @@ export interface ExerciseRawRow {
 
 export interface TemplateRawRow {
   id: string;
+  client_id: string | null;
   name: string;
   description: string | null;
   is_public: number;
@@ -74,6 +84,7 @@ export interface TemplateRawRow {
 
 export interface WorkoutRawRow {
   id: string;
+  client_id: string | null;
   user_id: string;
   template_id: string | null;
   started_at: string;
@@ -117,6 +128,7 @@ function toJson(value: unknown): string | null {
 export function mapExerciseRow(raw: ExerciseRawRow): ExerciseLocalRow {
   return {
     id: raw.id,
+    client_id: raw.client_id ?? undefined,
     name: raw.name,
     description: raw.description ?? undefined,
     notes: raw.notes ?? undefined,
@@ -136,6 +148,7 @@ export function mapExerciseRow(raw: ExerciseRawRow): ExerciseLocalRow {
 export function mapTemplateRow(raw: TemplateRawRow): TemplateLocalRow {
   return {
     id: raw.id,
+    client_id: raw.client_id ?? undefined,
     name: raw.name,
     description: raw.description ?? undefined,
     is_public: raw.is_public === 1,
@@ -154,6 +167,7 @@ export function mapTemplateRow(raw: TemplateRawRow): TemplateLocalRow {
 export function mapWorkoutRow(raw: WorkoutRawRow): WorkoutLocalRow {
   return {
     id: raw.id,
+    client_id: raw.client_id ?? undefined,
     user_id: raw.user_id,
     template_id: raw.template_id ?? undefined,
     started_at: raw.started_at,
@@ -180,9 +194,14 @@ export function mapBodyWeightRow(raw: BodyWeightRawRow): BodyWeightLocalRow {
   };
 }
 
-export function exerciseToRaw(exercise: Exercise, sync: Partial<SyncColumns> = {}): ExerciseRawRow {
+export function exerciseToRaw(
+  exercise: Exercise,
+  sync: Partial<SyncColumns> = {},
+  clientId?: string,
+): ExerciseRawRow {
   return {
     id: exercise.id,
+    client_id: clientId ?? null,
     name: exercise.name,
     description: exercise.description ?? null,
     notes: exercise.notes ?? null,
@@ -199,9 +218,14 @@ export function exerciseToRaw(exercise: Exercise, sync: Partial<SyncColumns> = {
   };
 }
 
-export function templateToRaw(template: Template, sync: Partial<SyncColumns> = {}): TemplateRawRow {
+export function templateToRaw(
+  template: Template,
+  sync: Partial<SyncColumns> = {},
+  clientId?: string,
+): TemplateRawRow {
   return {
     id: template.id,
+    client_id: clientId ?? null,
     name: template.name,
     description: template.description ?? null,
     is_public: template.is_public ? 1 : 0,
@@ -217,9 +241,14 @@ export function templateToRaw(template: Template, sync: Partial<SyncColumns> = {
   };
 }
 
-export function workoutToRaw(workout: Workout, sync: Partial<SyncColumns> = {}): WorkoutRawRow {
+export function workoutToRaw(
+  workout: Workout,
+  sync: Partial<SyncColumns> = {},
+  clientId?: string,
+): WorkoutRawRow {
   return {
     id: workout.id,
+    client_id: clientId ?? null,
     user_id: workout.user_id,
     template_id: workout.template_id ?? null,
     started_at: workout.started_at,
@@ -275,10 +304,15 @@ const WORKOUT_COLUMNS =
   'id, user_id, template_id, started_at, finished_at, notes, exercises, created_at, updated_at, version';
 const BODY_WEIGHT_COLUMNS = 'id, weight_kg, measured_at, created_at, updated_at';
 
-function buildLocalUpsertSql(table: SyncTable, columns: string): string {
+function buildLocalUpsertSql(table: SyncTable, columns: string, withClientId = false): string {
   const syncColumns = 'is_dirty, operation, last_synced_at';
-  return `INSERT INTO ${table} (${columns}, ${syncColumns}) VALUES (${[
+  const clientIdColumn = withClientId ? ', client_id' : '';
+  const clientIdSet = withClientId
+    ? ', client_id = CASE WHEN excluded.client_id IS NULL THEN client_id ELSE excluded.client_id END'
+    : '';
+  return `INSERT INTO ${table} (${columns}${clientIdColumn}, ${syncColumns}) VALUES (${[
     ...columns.split(', ').map(() => '?'),
+    ...(withClientId ? ['?'] : []),
     '?',
     '?',
     '?',
@@ -286,16 +320,20 @@ function buildLocalUpsertSql(table: SyncTable, columns: string): string {
     .split(', ')
     .filter((column) => column !== 'id')
     .map((column) => `${column} = excluded.${column}`)
-    .join(', ')}, is_dirty = excluded.is_dirty, operation = CASE WHEN excluded.is_dirty = 0 THEN NULL WHEN is_dirty = 1 THEN operation ELSE excluded.operation END, last_synced_at = CASE WHEN excluded.is_dirty = 1 THEN last_synced_at ELSE excluded.updated_at END`;
+    .join(', ')}${clientIdSet}, is_dirty = excluded.is_dirty, operation = CASE WHEN excluded.is_dirty = 0 THEN NULL WHEN is_dirty = 1 THEN operation ELSE excluded.operation END, last_synced_at = CASE WHEN excluded.is_dirty = 1 THEN last_synced_at ELSE excluded.updated_at END`;
 }
 
-function buildRemoteUpsertSql(table: SyncTable, columns: string): string {
-  const values = columns.split(', ').map(() => '?');
+function buildRemoteUpsertSql(table: SyncTable, columns: string, withClientId = false): string {
+  const values = [...columns.split(', ').map(() => '?'), ...(withClientId ? ['?'] : [])];
   const sets = columns
     .split(', ')
     .filter((column) => column !== 'id')
     .map((column) => `${column} = excluded.${column}`);
-  return `INSERT INTO ${table} (${columns}, is_dirty, operation, last_synced_at) VALUES (${[
+  const clientIdSet = withClientId
+    ? ', client_id = CASE WHEN excluded.client_id IS NULL THEN client_id ELSE excluded.client_id END'
+    : '';
+  const clientIdColumn = withClientId ? ', client_id' : '';
+  return `INSERT INTO ${table} (${columns}${clientIdColumn}, is_dirty, operation, last_synced_at) VALUES (${[
     ...values,
     '0',
     'NULL',
@@ -305,7 +343,7 @@ function buildRemoteUpsertSql(table: SyncTable, columns: string): string {
     'is_dirty = 0',
     'operation = NULL',
     'last_synced_at = excluded.updated_at',
-  ].join(', ')} WHERE is_dirty = 0`;
+  ].join(', ')}${clientIdSet} WHERE is_dirty = 0`;
 }
 
 function buildMarkSyncedSql(table: SyncTable, columns: string): string {
@@ -385,11 +423,12 @@ export class LocalDb implements SyncStore {
 
   // -- exercises --------------------------------------------------------------
 
-  upsertExercise(exercise: Exercise, sync: Partial<SyncColumns> = {}): void {
-    const row = exerciseToRaw(exercise, sync);
+  upsertExercise(exercise: Exercise, sync: UpsertSyncOptions = {}): void {
+    const row = exerciseToRaw(exercise, sync, sync.client_id);
     this.conn.runSync(
-      buildLocalUpsertSql('exercises', EXERCISE_COLUMNS),
+      buildLocalUpsertSql('exercises', EXERCISE_COLUMNS, true),
       ...exerciseValues(row),
+      row.client_id,
       row.is_dirty,
       row.operation,
       row.last_synced_at,
@@ -408,24 +447,25 @@ export class LocalDb implements SyncStore {
     return this.conn.getAllSync<ExerciseRawRow>('SELECT * FROM exercises').map(mapExerciseRow);
   }
 
-  // Local exercise ids are remapped to server ids when a create op is pushed
-  // (markSynced); the client-generated created_at is the stable handle for
-  // re-resolving a just-pushed row (e.g. to attach media).
-  findExerciseByCreatedAt(createdAt: string): ExerciseLocalRow | null {
+  // The server assigns its own id and timestamps on create, so after a push
+  // re-keys the local row (markSynced deletes the client-id row and upserts
+  // the server row) the client_id is the only stable handle back to it.
+  findExerciseByClientID(clientId: string): ExerciseLocalRow | null {
     const raw = this.conn.getFirstSync<ExerciseRawRow>(
-      'SELECT * FROM exercises WHERE created_at = ?',
-      createdAt,
+      'SELECT * FROM exercises WHERE client_id = ?',
+      clientId,
     );
     return raw ? mapExerciseRow(raw) : null;
   }
 
   // -- templates ----------------------------------------------------------------
 
-  upsertTemplate(template: Template, sync: Partial<SyncColumns> = {}): void {
-    const row = templateToRaw(template, sync);
+  upsertTemplate(template: Template, sync: UpsertSyncOptions = {}): void {
+    const row = templateToRaw(template, sync, sync.client_id);
     this.conn.runSync(
-      buildLocalUpsertSql('templates', TEMPLATE_COLUMNS),
+      buildLocalUpsertSql('templates', TEMPLATE_COLUMNS, true),
       ...templateValues(row),
+      row.client_id,
       row.is_dirty,
       row.operation,
       row.last_synced_at,
@@ -441,24 +481,24 @@ export class LocalDb implements SyncStore {
     return this.conn.getAllSync<TemplateRawRow>('SELECT * FROM templates').map(mapTemplateRow);
   }
 
-  // Local template ids are remapped to server ids when a create op is pushed
-  // (markSynced); the client-generated created_at is the stable handle for
-  // re-resolving a just-pushed row (e.g. to publish it).
-  findTemplateByCreatedAt(createdAt: string): TemplateLocalRow | null {
+  // See findExerciseByClientID: the server assigns its own id and timestamps
+  // on create, so client_id is the stable handle after a push re-key.
+  findTemplateByClientID(clientId: string): TemplateLocalRow | null {
     const raw = this.conn.getFirstSync<TemplateRawRow>(
-      'SELECT * FROM templates WHERE created_at = ?',
-      createdAt,
+      'SELECT * FROM templates WHERE client_id = ?',
+      clientId,
     );
     return raw ? mapTemplateRow(raw) : null;
   }
 
   // -- workouts ------------------------------------------------------------------
 
-  upsertWorkout(workout: Workout, sync: Partial<SyncColumns> = {}): void {
-    const row = workoutToRaw(workout, sync);
+  upsertWorkout(workout: Workout, sync: UpsertSyncOptions = {}): void {
+    const row = workoutToRaw(workout, sync, sync.client_id);
     this.conn.runSync(
-      buildLocalUpsertSql('workouts', WORKOUT_COLUMNS),
+      buildLocalUpsertSql('workouts', WORKOUT_COLUMNS, true),
       ...workoutValues(row),
+      row.client_id,
       row.is_dirty,
       row.operation,
       row.last_synced_at,
@@ -474,13 +514,15 @@ export class LocalDb implements SyncStore {
     return this.conn.getAllSync<WorkoutRawRow>('SELECT * FROM workouts').map(mapWorkoutRow);
   }
 
-  // Local workout ids are remapped to server ids when a create op is pushed
-  // (markSynced), so screens keep the client-generated started_at as a
-  // stable handle and re-resolve the row after syncs.
-  findWorkoutByStartedAt(startedAt: string): WorkoutLocalRow | null {
+  // See findExerciseByClientID: the server assigns its own id and started_at
+  // on create, so client_id is the stable handle after a push re-key. The
+  // active workout screen keeps the client_id across syncs to re-resolve the
+  // pushed row instead of replaying the pending create (which would duplicate
+  // the workout on the server).
+  findWorkoutByClientID(clientId: string): WorkoutLocalRow | null {
     const raw = this.conn.getFirstSync<WorkoutRawRow>(
-      'SELECT * FROM workouts WHERE started_at = ?',
-      startedAt,
+      'SELECT * FROM workouts WHERE client_id = ?',
+      clientId,
     );
     return raw ? mapWorkoutRow(raw) : null;
   }
@@ -548,8 +590,11 @@ export class LocalDb implements SyncStore {
 
   private markExerciseSynced(localId: string, server: Exercise): void {
     if (server.id !== localId) {
+      // Re-key: the server assigned a new id and its own timestamps. Carry
+      // the client_id through so screens can still resolve the pushed row.
+      const local = this.getExercise(localId);
       this.removeRow('exercises', localId);
-      this.upsertRemoteExercise(server);
+      this.upsertRemoteExercise(server, local?.client_id ?? localId);
       return;
     }
     const row = exerciseToRaw(server);
@@ -563,8 +608,10 @@ export class LocalDb implements SyncStore {
 
   private markTemplateSynced(localId: string, server: Template): void {
     if (server.id !== localId) {
+      // Re-key: carry the client_id through (see markExerciseSynced).
+      const local = this.getTemplate(localId);
       this.removeRow('templates', localId);
-      this.upsertRemoteTemplate(server);
+      this.upsertRemoteTemplate(server, local?.client_id ?? localId);
       return;
     }
     const row = templateToRaw(server);
@@ -578,8 +625,12 @@ export class LocalDb implements SyncStore {
 
   private markWorkoutSynced(localId: string, server: Workout): void {
     if (server.id !== localId) {
+      // Re-key: carry the client_id through (see markExerciseSynced). The
+      // active workout screen re-resolves by client_id so it never replays
+      // the pending create for an already-pushed workout.
+      const local = this.getWorkout(localId);
       this.removeRow('workouts', localId);
-      this.upsertRemoteWorkout(server);
+      this.upsertRemoteWorkout(server, local?.client_id ?? localId);
       return;
     }
     const row = workoutToRaw(server);
@@ -630,19 +681,31 @@ export class LocalDb implements SyncStore {
     }
   }
 
-  private upsertRemoteExercise(exercise: Exercise): void {
-    const row = exerciseToRaw(exercise);
-    this.conn.runSync(buildRemoteUpsertSql('exercises', EXERCISE_COLUMNS), ...exerciseValues(row));
+  private upsertRemoteExercise(exercise: Exercise, clientId?: string): void {
+    const row = exerciseToRaw(exercise, {}, clientId);
+    this.conn.runSync(
+      buildRemoteUpsertSql('exercises', EXERCISE_COLUMNS, true),
+      ...exerciseValues(row),
+      row.client_id,
+    );
   }
 
-  private upsertRemoteTemplate(template: Template): void {
-    const row = templateToRaw(template);
-    this.conn.runSync(buildRemoteUpsertSql('templates', TEMPLATE_COLUMNS), ...templateValues(row));
+  private upsertRemoteTemplate(template: Template, clientId?: string): void {
+    const row = templateToRaw(template, {}, clientId);
+    this.conn.runSync(
+      buildRemoteUpsertSql('templates', TEMPLATE_COLUMNS, true),
+      ...templateValues(row),
+      row.client_id,
+    );
   }
 
-  private upsertRemoteWorkout(workout: Workout): void {
-    const row = workoutToRaw(workout);
-    this.conn.runSync(buildRemoteUpsertSql('workouts', WORKOUT_COLUMNS), ...workoutValues(row));
+  private upsertRemoteWorkout(workout: Workout, clientId?: string): void {
+    const row = workoutToRaw(workout, {}, clientId);
+    this.conn.runSync(
+      buildRemoteUpsertSql('workouts', WORKOUT_COLUMNS, true),
+      ...workoutValues(row),
+      row.client_id,
+    );
   }
 
   private upsertRemoteBodyWeight(entry: BodyWeightEntry): void {

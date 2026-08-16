@@ -11,6 +11,7 @@ export const SYNC_COLUMNS_DDL = `
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS exercises (
   id TEXT PRIMARY KEY NOT NULL,
+  client_id TEXT,
   name TEXT NOT NULL,
   description TEXT,
   notes TEXT,
@@ -26,6 +27,7 @@ ${SYNC_COLUMNS_DDL}
 
 CREATE TABLE IF NOT EXISTS templates (
   id TEXT PRIMARY KEY NOT NULL,
+  client_id TEXT,
   name TEXT NOT NULL,
   description TEXT,
   is_public INTEGER NOT NULL DEFAULT 0,
@@ -40,6 +42,7 @@ ${SYNC_COLUMNS_DDL}
 
 CREATE TABLE IF NOT EXISTS workouts (
   id TEXT PRIMARY KEY NOT NULL,
+  client_id TEXT,
   user_id TEXT NOT NULL,
   template_id TEXT,
   started_at TEXT NOT NULL,
@@ -68,10 +71,13 @@ CREATE TABLE IF NOT EXISTS sync_state (
 
 CREATE INDEX IF NOT EXISTS idx_exercises_updated_at ON exercises (updated_at);
 CREATE INDEX IF NOT EXISTS idx_exercises_is_dirty ON exercises (is_dirty);
+CREATE INDEX IF NOT EXISTS idx_exercises_client_id ON exercises (client_id);
 CREATE INDEX IF NOT EXISTS idx_templates_updated_at ON templates (updated_at);
 CREATE INDEX IF NOT EXISTS idx_templates_is_dirty ON templates (is_dirty);
+CREATE INDEX IF NOT EXISTS idx_templates_client_id ON templates (client_id);
 CREATE INDEX IF NOT EXISTS idx_workouts_updated_at ON workouts (updated_at);
 CREATE INDEX IF NOT EXISTS idx_workouts_is_dirty ON workouts (is_dirty);
+CREATE INDEX IF NOT EXISTS idx_workouts_client_id ON workouts (client_id);
 CREATE INDEX IF NOT EXISTS idx_body_weights_updated_at ON body_weights (updated_at);
 CREATE INDEX IF NOT EXISTS idx_body_weights_is_dirty ON body_weights (is_dirty);
 `;

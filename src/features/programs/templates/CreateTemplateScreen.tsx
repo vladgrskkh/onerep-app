@@ -91,15 +91,20 @@ export function CreateTemplateScreen({ onCreated }: CreateTemplateScreenProps) {
         })),
       };
       // Offline-first: pending create pushed by the sync engine. Publishing
-      // needs the server id, so it happens after the create has been pushed.
-      getLocalDb().upsertTemplate(template, { is_dirty: 1, operation: 'create' });
+      // needs the server-assigned id, so it runs after the create has been
+      // pushed; the client_id is the stable handle to the pushed row.
+      getLocalDb().upsertTemplate(template, {
+        is_dirty: 1,
+        operation: 'create',
+        client_id: template.id,
+      });
       await sync();
 
       if (publishOn) {
         try {
-          const pushed = getLocalDb().findTemplateByCreatedAt(now);
-          if (!pushed) {
-            throw new Error('Template has not reached the server yet');
+          const pushed = getLocalDb().findTemplateByClientID(template.id);
+          if (!pushed || pushed.is_dirty === 1) {
+            throw new Error('template has not reached the server yet');
           }
           const published = await gymApi.templates.publish(pushed.id);
           getLocalDb().upsertRemote('templates', published);

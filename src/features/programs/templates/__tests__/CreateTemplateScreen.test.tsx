@@ -10,7 +10,7 @@ const mockGetExercises = jest.fn(() => [
   { id: 'e2', name: 'Squat' },
 ]);
 const mockUpsertTemplate = jest.fn<(row: unknown, sync?: object) => void>();
-const mockFindTemplateByCreatedAt = jest.fn<(createdAt: string) => TemplateLocalRow | null>();
+const mockFindTemplateByClientID = jest.fn<(clientId: string) => TemplateLocalRow | null>();
 const mockUpsertRemote = jest.fn<(table: string, row: unknown) => void>();
 const mockSync = jest.fn(async () => ({ lastSyncedAt: '2026-01-02T00:00:00Z' }));
 
@@ -18,7 +18,7 @@ jest.mock('../../../../shared/db/database', () => ({
   getLocalDb: jest.fn(() => ({
     getExercises: mockGetExercises,
     upsertTemplate: mockUpsertTemplate,
-    findTemplateByCreatedAt: mockFindTemplateByCreatedAt,
+    findTemplateByClientID: mockFindTemplateByClientID,
     upsertRemote: mockUpsertRemote,
   })),
 }));
@@ -75,7 +75,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockUpsertTemplate.mockReturnValue(undefined);
   mockUpsertRemote.mockReturnValue(undefined);
-  mockFindTemplateByCreatedAt.mockReturnValue(null);
+  mockFindTemplateByClientID.mockReturnValue(null);
   mockPublish.mockResolvedValue({} as Template);
 });
 
@@ -114,25 +114,29 @@ describe('CreateTemplateScreen', () => {
         created_by_user_id: 'u1',
         exercises: [{ exercise_id: 'e1', sort_order: 0, planned_sets: 4 }],
       }),
-      { is_dirty: 1, operation: 'create' },
+      { is_dirty: 1, operation: 'create', client_id: expect.any(String) },
     );
     expect(mockSync).toHaveBeenCalled();
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ name: 'Push day' }));
   });
 
   it('publishes via the API when the toggle is on and the create was pushed', async () => {
-    const pushed = {
+    // Real server behavior: after the push the row has a server-assigned id
+    // and server timestamps; only the client_id survives. Publishing must
+    // resolve the server id via client_id — a created_at lookup would miss.
+    const pushed: TemplateLocalRow = {
       id: 'server-t1',
+      client_id: 'client-t1',
       name: 'Push day',
       is_public: false,
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
+      created_at: '2026-02-03T12:00:00Z',
+      updated_at: '2026-02-03T12:00:00Z',
       version: 1,
       is_dirty: 0,
       operation: null,
-      last_synced_at: null,
+      last_synced_at: '2026-02-03T12:00:00Z',
     };
-    mockFindTemplateByCreatedAt.mockReturnValue(pushed);
+    mockFindTemplateByClientID.mockReturnValue(pushed);
     mockPublish.mockResolvedValue({ ...pushed, is_public: true });
     const instance = await renderCreate();
 
@@ -142,6 +146,8 @@ describe('CreateTemplateScreen', () => {
     await changeText(instance, 'createTemplate.name', 'Push day');
     await submit(instance);
 
+    const created = mockUpsertTemplate.mock.calls[0]?.[0] as Template;
+    expect(mockFindTemplateByClientID).toHaveBeenCalledWith(created.id);
     expect(mockPublish).toHaveBeenCalledWith('server-t1');
     expect(mockUpsertRemote).toHaveBeenCalledWith(
       'templates',
@@ -150,7 +156,20 @@ describe('CreateTemplateScreen', () => {
   });
 
   it('does not publish when the create has not reached the server', async () => {
-    mockFindTemplateByCreatedAt.mockReturnValue(null);
+    // The pushed row is still the local dirty create (offline push): publish
+    // would 404 on the client id, so the screen must skip it with a message.
+    mockFindTemplateByClientID.mockReturnValue({
+      id: 'client-t1',
+      client_id: 'client-t1',
+      name: 'Push day',
+      is_public: false,
+      created_at: '2026-02-03T12:00:00Z',
+      updated_at: '2026-02-03T12:00:00Z',
+      version: 1,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    });
     const instance = await renderCreate();
 
     await act(async () => {

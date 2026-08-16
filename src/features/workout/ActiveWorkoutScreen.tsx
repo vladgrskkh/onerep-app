@@ -89,13 +89,26 @@ function PrBadge() {
   );
 }
 
+function resolveWorkoutRow(workoutId: string): WorkoutLocalRow | null {
+  // workoutId is the client-generated uuid in the start-from-template flow,
+  // which doubles as the row's client_id both before and after the push
+  // re-key. Server ids (history navigation) have no client_id entry and fall
+  // through to the id lookup.
+  return getLocalDb().findWorkoutByClientID(workoutId) ?? getLocalDb().getWorkout(workoutId);
+}
+
 export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWorkoutScreenProps) {
   const theme = useTheme();
   const { sync, lastSyncAt } = useSync();
-  const [workout, setWorkout] = useState<WorkoutLocalRow | null>(
-    () => getLocalDb().getWorkout(workoutId) ?? null,
+  const [workout, setWorkout] = useState<WorkoutLocalRow | null>(() =>
+    resolveWorkoutRow(workoutId),
   );
-  const startedAtRef = useRef<string | null>(workout?.started_at ?? null);
+  // Stable handle across the markSynced re-key: on local create client_id ==
+  // the generated id, and the db layer carries it onto the pushed row (whose
+  // id and timestamps are server-assigned).
+  const clientIdRef = useRef<string | null>(
+    workout ? (workout.client_id ?? (workout.is_dirty === 1 ? workout.id : null)) : null,
+  );
   const [logForm, setLogForm] = useState<LogForm>(EMPTY_FORM);
   const [restRemaining, setRestRemaining] = useState<number | null>(null);
   const [lastPr, setLastPr] = useState<WorkoutSetWithPr | null>(null);
@@ -105,18 +118,26 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
   const [finishing, setFinishing] = useState(false);
   const [logging, setLogging] = useState(false);
 
-  // The local workout id is remapped to the server id when the create op is
-  // pushed, so started_at is the stable handle: re-resolve after each sync.
-  const reload = useCallback(() => {
-    const startedAt = startedAtRef.current;
-    const row =
-      (startedAt ? getLocalDb().findWorkoutByStartedAt(startedAt) : null) ??
-      getLocalDb().getWorkout(workoutId);
+  // Re-reads the row fresh from SQLite. Handlers always operate on the fresh
+  // row so a set log can never re-insert a dirty create for a workout the
+  // sync engine already pushed (which would duplicate it on the server).
+  const resolveCurrent = useCallback((): WorkoutLocalRow | null => {
+    const clientId = clientIdRef.current;
+    const row = clientId
+      ? (getLocalDb().findWorkoutByClientID(clientId) ?? getLocalDb().getWorkout(workoutId))
+      : getLocalDb().getWorkout(workoutId);
     if (row) {
-      startedAtRef.current = row.started_at;
+      clientIdRef.current = row.client_id ?? (row.is_dirty === 1 ? row.id : null);
+    }
+    return row;
+  }, [workoutId]);
+
+  const reload = useCallback(() => {
+    const row = resolveCurrent();
+    if (row) {
       setWorkout(row);
     }
-  }, [workoutId]);
+  }, [resolveCurrent]);
 
   useEffect(() => {
     if (lastSyncAt === null) {
@@ -171,18 +192,20 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
     : 'Workout';
   const exercises = workout.exercises ?? [];
 
-  const persist = (next: Workout, dirty: boolean, operation: Operation | null) => {
+  const persist = (current: WorkoutLocalRow, next: Workout, dirty: boolean, operation: Operation | null) => {
     const local: WorkoutLocalRow = {
       ...next,
+      client_id: current.client_id,
       is_dirty: dirty ? 1 : 0,
       operation: dirty ? operation : null,
-      last_synced_at: workout.last_synced_at,
+      last_synced_at: current.last_synced_at,
     };
     getLocalDb().upsertWorkout(next, {
       is_dirty: local.is_dirty,
       operation: local.operation ?? undefined,
+      client_id: current.client_id,
     });
-    startedAtRef.current = next.started_at;
+    clientIdRef.current = local.client_id ?? (local.is_dirty === 1 ? local.id : null);
     setWorkout(local);
   };
 
@@ -202,6 +225,11 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
     setError(null);
     setLogging(true);
     try {
+      const current = resolveCurrent();
+      if (!current) {
+        setError('Workout not found');
+        return;
+      }
       const request: LogSetRequest = {
         weight_kg: weight,
         reps,
@@ -211,7 +239,7 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
       };
       const pendingSet: WorkoutSetWithPr = {
         id: newId(),
-        set_number: nextSetNumber(workout.exercises?.find((e) => e.id === exerciseId)?.sets),
+        set_number: nextSetNumber(current.exercises?.find((e) => e.id === exerciseId)?.sets),
         weight_kg: request.weight_kg,
         reps: request.reps,
         rpe: request.rpe,
@@ -220,22 +248,22 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
       };
 
       let saved: WorkoutSetWithPr;
-      if (workout.is_dirty === 1) {
+      if (current.is_dirty === 1) {
         // Pending create: the sync engine replays start + addExercise + every
         // set against the API, and the server computes PRs during that push.
         saved = pendingSet;
-        persist(appendSet(workout, exerciseId, saved), true, workout.operation ?? 'create');
+        persist(current, appendSet(current, exerciseId, saved), true, current.operation ?? 'create');
       } else {
         try {
-          const result = await gymApi.workouts.logSet(workout.id, exerciseId, request);
+          const result = await gymApi.workouts.logSet(current.id, exerciseId, request);
           saved = result;
-          persist(appendSet(workout, exerciseId, result), false, null);
+          persist(current, appendSet(current, exerciseId, result), false, null);
         } catch (postError) {
           // Offline: keep the set locally and mark the row dirty. Note: the
           // sync engine has no workout update push yet, so this set stays
           // local until that lands.
           saved = pendingSet;
-          persist(appendSet(workout, exerciseId, pendingSet), true, 'update');
+          persist(current, appendSet(current, exerciseId, pendingSet), true, 'update');
           setError(
             `Set saved locally (sync pending): ${getUserMessage(
               postError,
@@ -260,13 +288,19 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
 
   const addExercise = async (exerciseId: string) => {
     setError(null);
-    const { workout: next, workoutExercise } = appendWorkoutExercise(workout, exerciseId);
-    if (workout.is_dirty === 1) {
-      persist(next, true, workout.operation ?? 'create');
+    const current = resolveCurrent();
+    if (!current) {
+      setError('Workout not found');
+      return;
+    }
+    const { workout: next, workoutExercise } = appendWorkoutExercise(current, exerciseId);
+    if (current.is_dirty === 1) {
+      persist(current, next, true, current.operation ?? 'create');
     } else {
       try {
-        const serverExercise = await gymApi.workouts.addExercise(workout.id, { exercise_id: exerciseId });
+        const serverExercise = await gymApi.workouts.addExercise(current.id, { exercise_id: exerciseId });
         persist(
+          current,
           {
             ...next,
             exercises: (next.exercises ?? []).map((item) =>
@@ -277,7 +311,7 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
           null,
         );
       } catch (addError) {
-        persist(next, true, 'update');
+        persist(current, next, true, 'update');
         setError(getUserMessage(addError, 'Saved locally; will sync when possible'));
       }
     }
@@ -290,17 +324,25 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
     setFinishing(true);
     setError(null);
     try {
-      const finished = await gymApi.workouts.finish(workout.id);
+      const current = resolveCurrent();
+      if (!current) {
+        setError('Workout not found');
+        return;
+      }
+      const finished = await gymApi.workouts.finish(current.id);
       getLocalDb().upsertRemote('workouts', finished);
       onWorkoutFinished?.(finished);
     } catch (finishError) {
       // Offline: record the finish locally. Note: no workout update push in
       // the sync engine yet, so the finished_at won't reach the server until
       // that lands.
-      const finished = { ...workout, finished_at: new Date().toISOString() };
-      persist(finished, workout.is_dirty === 1, workout.operation ?? 'update');
+      const current = resolveCurrent();
+      if (current) {
+        const finished = { ...current, finished_at: new Date().toISOString() };
+        persist(current, finished, current.is_dirty === 1, current.operation ?? 'update');
+        onWorkoutFinished?.(finished);
+      }
       setError(getUserMessage(finishError, 'Finish saved locally; will sync when possible'));
-      onWorkoutFinished?.(finished);
     } finally {
       setFinishing(false);
     }

@@ -33,10 +33,16 @@ export function buildWorkoutFromTemplate(
 
 // Offline-first workout start: copies the template's exercises client-side
 // into a local workout row with a create op. The sync engine's workout
-// adapter replays start + addExercise + logSet against the API on push.
+// adapter replays start + addExercise + logSet against the API on push. The
+// client_id (== the generated id) survives the markSynced re-key so the
+// active workout screen can resolve the pushed row by its server id.
 export function startWorkoutFromTemplate(template: Template, userId: string): Workout {
   const workout = buildWorkoutFromTemplate(template, userId, new Date().toISOString());
-  getLocalDb().upsertWorkout(workout, { is_dirty: 1, operation: 'create' });
+  getLocalDb().upsertWorkout(workout, {
+    is_dirty: 1,
+    operation: 'create',
+    client_id: workout.id,
+  });
   return workout;
 }
 
