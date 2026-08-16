@@ -408,6 +408,17 @@ export class LocalDb implements SyncStore {
     return this.conn.getAllSync<ExerciseRawRow>('SELECT * FROM exercises').map(mapExerciseRow);
   }
 
+  // Local exercise ids are remapped to server ids when a create op is pushed
+  // (markSynced); the client-generated created_at is the stable handle for
+  // re-resolving a just-pushed row (e.g. to attach media).
+  findExerciseByCreatedAt(createdAt: string): ExerciseLocalRow | null {
+    const raw = this.conn.getFirstSync<ExerciseRawRow>(
+      'SELECT * FROM exercises WHERE created_at = ?',
+      createdAt,
+    );
+    return raw ? mapExerciseRow(raw) : null;
+  }
+
   // -- templates ----------------------------------------------------------------
 
   upsertTemplate(template: Template, sync: Partial<SyncColumns> = {}): void {
@@ -430,6 +441,17 @@ export class LocalDb implements SyncStore {
     return this.conn.getAllSync<TemplateRawRow>('SELECT * FROM templates').map(mapTemplateRow);
   }
 
+  // Local template ids are remapped to server ids when a create op is pushed
+  // (markSynced); the client-generated created_at is the stable handle for
+  // re-resolving a just-pushed row (e.g. to publish it).
+  findTemplateByCreatedAt(createdAt: string): TemplateLocalRow | null {
+    const raw = this.conn.getFirstSync<TemplateRawRow>(
+      'SELECT * FROM templates WHERE created_at = ?',
+      createdAt,
+    );
+    return raw ? mapTemplateRow(raw) : null;
+  }
+
   // -- workouts ------------------------------------------------------------------
 
   upsertWorkout(workout: Workout, sync: Partial<SyncColumns> = {}): void {
@@ -450,6 +472,17 @@ export class LocalDb implements SyncStore {
 
   getWorkouts(): WorkoutLocalRow[] {
     return this.conn.getAllSync<WorkoutRawRow>('SELECT * FROM workouts').map(mapWorkoutRow);
+  }
+
+  // Local workout ids are remapped to server ids when a create op is pushed
+  // (markSynced), so screens keep the client-generated started_at as a
+  // stable handle and re-resolve the row after syncs.
+  findWorkoutByStartedAt(startedAt: string): WorkoutLocalRow | null {
+    const raw = this.conn.getFirstSync<WorkoutRawRow>(
+      'SELECT * FROM workouts WHERE started_at = ?',
+      startedAt,
+    );
+    return raw ? mapWorkoutRow(raw) : null;
   }
 
   // -- body weights -----------------------------------------------------------------

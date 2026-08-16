@@ -367,4 +367,44 @@ describe('LocalDb', () => {
     expect(params[params.length - 3]).toBe(1);
     expect(params[params.length - 2]).toBe('create');
   });
+
+  it('findWorkoutByStartedAt resolves a row by its stable started_at handle', () => {
+    const db = new LocalDb(conn);
+    mockConn().getFirstSync.mockReturnValue({
+      id: 'w1',
+      user_id: 'u1',
+      template_id: null,
+      started_at: '2026-01-01T08:00:00Z',
+      finished_at: null,
+      notes: null,
+      exercises: null,
+      created_at: '2026-01-01T08:00:00Z',
+      updated_at: '2026-01-01T08:00:00Z',
+      version: 0,
+      is_dirty: 0,
+      operation: null,
+      last_synced_at: null,
+    });
+    const row = db.findWorkoutByStartedAt('2026-01-01T08:00:00Z');
+    expect(mockConn().getFirstSync).toHaveBeenCalledWith(
+      'SELECT * FROM workouts WHERE started_at = ?',
+      '2026-01-01T08:00:00Z',
+    );
+    expect(row?.id).toBe('w1');
+  });
+
+  it('findExerciseByCreatedAt and findTemplateByCreatedAt use created_at as the handle', () => {
+    const db = new LocalDb(conn);
+    mockConn().getFirstSync.mockReturnValue(null);
+    expect(db.findExerciseByCreatedAt('2026-01-01T00:00:00Z')).toBeNull();
+    expect(db.findTemplateByCreatedAt('2026-01-01T00:00:00Z')).toBeNull();
+    expect(mockConn().getFirstSync).toHaveBeenCalledWith(
+      'SELECT * FROM exercises WHERE created_at = ?',
+      '2026-01-01T00:00:00Z',
+    );
+    expect(mockConn().getFirstSync).toHaveBeenCalledWith(
+      'SELECT * FROM templates WHERE created_at = ?',
+      '2026-01-01T00:00:00Z',
+    );
+  });
 });
