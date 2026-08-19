@@ -32,6 +32,7 @@ const syncedWorkout: WorkoutLocalRow = {
 
 let mockRow: WorkoutLocalRow | null;
 let mockLastSyncAt: string | null = null;
+let mockDataGeneration = 0;
 // After the push, the old client-id row is gone from the id index; the row
 // is only reachable via its carried client_id.
 const mockGetWorkout = jest.fn(() => null);
@@ -43,6 +44,7 @@ const mockGetExercises = jest.fn(() => [
 const mockGetTemplate = jest.fn(() => ({ id: 't1', name: 'Push day' }));
 const mockUpsertWorkout = jest.fn<(row: unknown, sync?: object) => void>();
 const mockUpsertRemote = jest.fn<(table: string, row: unknown) => void>();
+const mockGetDataGeneration = jest.fn(() => mockDataGeneration);
 const mockSync = jest.fn(async () => ({ lastSyncedAt: '2026-01-02T00:00:00Z' }));
 
 jest.mock('../../../shared/db/database', () => ({
@@ -53,6 +55,7 @@ jest.mock('../../../shared/db/database', () => ({
     getTemplate: mockGetTemplate,
     upsertWorkout: mockUpsertWorkout,
     upsertRemote: mockUpsertRemote,
+    getDataGeneration: mockGetDataGeneration,
   })),
 }));
 
@@ -134,6 +137,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockRow = syncedWorkout;
   mockLastSyncAt = null;
+  mockDataGeneration = 0;
   mockUpsertWorkout.mockReturnValue(undefined);
   mockUpsertRemote.mockReturnValue(undefined);
   mockLogSet.mockResolvedValue({
@@ -308,5 +312,45 @@ describe('ActiveWorkoutScreen', () => {
     expect(onWorkoutFinished).toHaveBeenCalledWith(
       expect.objectContaining({ finished_at: '2026-01-01T09:00:00Z' }),
     );
+  });
+
+  it('marks a synced workout finish as a dirty update when the API is offline', async () => {
+    mockFinish.mockRejectedValue(new Error('offline'));
+    const instance = await renderActive();
+
+    await act(async () => {
+      await instance.root.findByProps({ testID: 'workout.finish' }).props.onPress();
+    });
+
+    expect(mockUpsertWorkout).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'server-w1', finished_at: expect.any(String) }),
+      { is_dirty: 1, operation: 'update', client_id: 'w1' },
+    );
+  });
+
+  it('does not write a finish response after the local database generation changes', async () => {
+    let releaseFinish!: (workout: WorkoutLocalRow) => void;
+    mockFinish.mockReturnValue(
+      new Promise((resolve) => {
+        releaseFinish = resolve;
+      }),
+    );
+    const onWorkoutFinished = jest.fn();
+    const instance = await renderActive();
+    let finishPromise!: Promise<void>;
+
+    await act(async () => {
+      finishPromise = instance.root.findByProps({ testID: 'workout.finish' }).props.onPress();
+      await Promise.resolve();
+    });
+    mockDataGeneration = 1;
+    releaseFinish({ ...syncedWorkout, finished_at: '2026-01-01T09:00:00Z' });
+    await act(async () => {
+      await finishPromise;
+    });
+
+    expect(mockUpsertRemote).not.toHaveBeenCalled();
+    expect(mockUpsertWorkout).not.toHaveBeenCalled();
+    expect(onWorkoutFinished).not.toHaveBeenCalled();
   });
 });

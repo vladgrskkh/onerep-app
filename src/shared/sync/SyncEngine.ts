@@ -25,11 +25,16 @@ export interface SyncTableAdapter {
   table: SyncTable;
   pull: (since?: string) => Promise<ServerRow[]>;
   fetchOne: (id: string) => Promise<ServerRow | null>;
-  pushCreate?: (row: LocalRow) => Promise<ServerRow>;
-  pushUpdate?: (row: LocalRow) => Promise<ServerRow>;
-  pushDelete?: (row: LocalRow) => Promise<void>;
+  pushCreate?: PushHandler;
+  pushUpdate?: PushHandler;
+  pushDelete?: PushHandler;
   isConflict: (error: unknown) => boolean;
 }
+
+type PushHandler = (
+  row: LocalRow,
+  isCurrentGeneration?: () => boolean,
+) => Promise<ServerRow | void | null>;
 
 export interface SyncError {
   table: SyncTable;
@@ -196,7 +201,10 @@ export class SyncEngine {
     }
 
     try {
-      const server = await handler(row);
+      const server =
+        adapter.table === 'workouts'
+          ? await handler(row, () => this.isCurrentGeneration(generation))
+          : await handler(row);
       if (!this.isCurrentGeneration(generation)) {
         return;
       }
@@ -204,6 +212,8 @@ export class SyncEngine {
         this.store.removeRow(adapter.table, row.id);
       } else if (server) {
         this.store.markSynced(adapter.table, row.id, server);
+      } else {
+        return;
       }
       result.pushed += 1;
     } catch (error) {
@@ -344,27 +354,64 @@ const templatesAdapter: SyncTableAdapter = {
   isConflict: isConflictError,
 };
 
-async function pushWorkoutCreate(row: WorkoutLocalRow): Promise<Workout> {
+async function pushWorkoutCreate(
+  row: WorkoutLocalRow,
+  isCurrentGeneration: () => boolean = () => true,
+): Promise<Workout | null> {
   const started = await gymApi.workouts.start({ template_id: row.template_id });
+  if (!isCurrentGeneration()) {
+    return null;
+  }
   for (const exercise of row.exercises ?? []) {
     const serverExercise = await gymApi.workouts.addExercise(started.id, {
       exercise_id: exercise.exercise_id,
     });
+    if (!isCurrentGeneration()) {
+      return null;
+    }
     for (const set of exercise.sets ?? []) {
       await gymApi.workouts.logSet(started.id, serverExercise.id, logSetRequest(set));
+      if (!isCurrentGeneration()) {
+        return null;
+      }
     }
   }
   if (row.finished_at) {
-    return gymApi.workouts.finish(started.id);
+    const finished = await gymApi.workouts.finish(started.id);
+    if (!isCurrentGeneration()) {
+      return null;
+    }
+    return finished;
   }
-  return gymApi.workouts.get(started.id);
+  const current = await gymApi.workouts.get(started.id);
+  if (!isCurrentGeneration()) {
+    return null;
+  }
+  return current;
+}
+
+async function pushWorkoutUpdate(
+  row: WorkoutLocalRow,
+  isCurrentGeneration: () => boolean = () => true,
+): Promise<Workout | null> {
+  if (!row.finished_at) {
+    throw new Error('Workout update is only supported for finished workouts');
+  }
+  const finished = await gymApi.workouts.finish(row.id);
+  if (!isCurrentGeneration()) {
+    return null;
+  }
+  return finished;
 }
 
 const workoutsAdapter: SyncTableAdapter = {
   table: 'workouts',
   pull: (since) => gymApi.workouts.list(since ? { since } : undefined),
   fetchOne: (id) => fetchOrNull(() => gymApi.workouts.get(id)),
-  pushCreate: (row) => pushWorkoutCreate(row as WorkoutLocalRow),
+  pushCreate: (row, isCurrentGeneration) =>
+    pushWorkoutCreate(row as WorkoutLocalRow, isCurrentGeneration),
+  pushUpdate: (row, isCurrentGeneration) =>
+    pushWorkoutUpdate(row as WorkoutLocalRow, isCurrentGeneration),
   isConflict: isConflictError,
 };
 
