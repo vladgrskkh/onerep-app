@@ -24,6 +24,23 @@ export interface SqlConnection {
   getAllSync<T>(source: string, ...params: SqlParam[]): T[];
 }
 
+const CLIENT_ID_TABLES = ['exercises', 'templates', 'workouts'] as const;
+
+interface SqlTableInfoRow {
+  name: string;
+}
+
+export function initializeLocalDb(conn: SqlConnection): void {
+  for (const table of CLIENT_ID_TABLES) {
+    const columns = conn.getAllSync<SqlTableInfoRow>(`PRAGMA table_info(${table})`);
+    if (columns.length > 0 && !columns.some((column) => column.name === 'client_id')) {
+      conn.execSync(`ALTER TABLE ${table} ADD COLUMN client_id TEXT`);
+    }
+  }
+
+  conn.execSync(SCHEMA_SQL);
+}
+
 export interface SyncColumns {
   is_dirty: number;
   operation: Operation | null;
@@ -421,7 +438,7 @@ export class LocalDb implements SyncStore {
   constructor(private readonly conn: SqlConnection) {}
 
   init(): void {
-    this.conn.execSync(SCHEMA_SQL);
+    initializeLocalDb(this.conn);
   }
 
   // -- exercises --------------------------------------------------------------
@@ -838,7 +855,7 @@ function loadSqlite(): typeof import('expo-sqlite') {
 export function openLocalDb(): SqlConnection {
   const sqlite = loadSqlite();
   const conn = sqlite.openDatabaseSync(DB_NAME);
-  conn.execSync(SCHEMA_SQL);
+  initializeLocalDb(conn);
   return conn;
 }
 

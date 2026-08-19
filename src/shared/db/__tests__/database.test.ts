@@ -11,6 +11,7 @@ import {
   mapWorkoutRow,
   templateToRaw,
   workoutToRaw,
+  initializeLocalDb,
   type ExerciseRawRow,
   type SqlConnection,
   type SqlParam,
@@ -630,5 +631,52 @@ describe('LocalDb', () => {
       'SELECT * FROM templates WHERE client_id = ?',
       'client-t1',
     );
+  });
+});
+
+describe('initializeLocalDb', () => {
+  it('adds missing client_id columns before applying the schema', () => {
+    const conn = makeConnection({
+      getAllSync: jest.fn((source: string) => {
+        if (source === 'PRAGMA table_info(exercises)') {
+          return [{ name: 'id' }];
+        }
+        if (source === 'PRAGMA table_info(templates)') {
+          return [{ name: 'id' }, { name: 'client_id' }];
+        }
+        if (source === 'PRAGMA table_info(workouts)') {
+          return [{ name: 'id' }];
+        }
+        return [];
+      }) as unknown as SqlConnection['getAllSync'],
+    });
+
+    initializeLocalDb(conn);
+
+    expect((conn.execSync as jest.Mock).mock.calls).toEqual([
+      ['ALTER TABLE exercises ADD COLUMN client_id TEXT'],
+      ['ALTER TABLE workouts ADD COLUMN client_id TEXT'],
+      [SCHEMA_SQL],
+    ]);
+  });
+
+  it('does not alter current tables that already have client_id', () => {
+    const conn = makeConnection({
+      getAllSync: jest.fn(() => [{ name: 'id' }, { name: 'client_id' }]) as unknown as SqlConnection['getAllSync'],
+    });
+
+    initializeLocalDb(conn);
+
+    expect(conn.execSync).toHaveBeenCalledTimes(1);
+    expect(conn.execSync).toHaveBeenCalledWith(SCHEMA_SQL);
+  });
+
+  it('does not alter tables that do not exist yet on a fresh database', () => {
+    const conn = makeConnection({ getAllSync: jest.fn(() => []) });
+
+    initializeLocalDb(conn);
+
+    expect(conn.execSync).toHaveBeenCalledTimes(1);
+    expect(conn.execSync).toHaveBeenCalledWith(SCHEMA_SQL);
   });
 });

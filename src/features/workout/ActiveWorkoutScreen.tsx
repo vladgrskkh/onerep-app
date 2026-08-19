@@ -269,9 +269,8 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
           if (!isCurrentDataGeneration(dataGeneration)) {
             return;
           }
-          // Offline: keep the set locally and mark the row dirty. Note: the
-          // sync engine has no workout update push yet, so this set stays
-          // local until that lands.
+          // Offline: keep the set locally and mark the row dirty. The sync
+          // engine replays this workout update during the next sync push.
           saved = pendingSet;
           persist(current, appendSet(current, exerciseId, pendingSet), true, 'update');
           setError(
@@ -358,8 +357,8 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
       if (dataGeneration === null || !isCurrentDataGeneration(dataGeneration)) {
         return;
       }
-      // Offline: record the finish locally. Note: no workout update push in
-      // the next sync push.
+      // Offline: record the finish locally; the sync engine replays this
+      // workout update during the next sync push.
       const current = resolveCurrent();
       if (current) {
         const finished = { ...current, finished_at: new Date().toISOString() };
