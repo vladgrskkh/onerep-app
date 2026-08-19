@@ -5,6 +5,7 @@ import type { BodyWeightEntry, OneRMEntry, VolumeEntry } from '../../shared/api/
 import { gymApi } from '../../shared/api/gym';
 import { getLocalDb, type ExerciseLocalRow } from '../../shared/db/database';
 import { newId } from '../../shared/db/ids';
+import { muscleGroupName } from '../../shared/db/muscleGroups';
 import { useSync } from '../../shared/sync/useSync';
 import { Button } from '../../shared/ui/Button';
 import { Card } from '../../shared/ui/Card';
@@ -48,23 +49,54 @@ function weeksAgo(weeks: number): string {
   return new Date(Date.now() - weeks * WEEK_MS).toISOString();
 }
 
-export function buildWeeklyVolume(entries: VolumeEntry[]): ChartPoint[] {
-  const buckets = new Map<number, number>();
-  for (const entry of entries) {
-    const weekStart = startOfWeek(new Date(entry.date)).getTime();
-    buckets.set(weekStart, (buckets.get(weekStart) ?? 0) + entry.total_kg);
-  }
-  const now = startOfWeek(new Date()).getTime();
+export interface WeeklyVolumeGroup {
+  muscleGroupId: number;
+  label: string;
+  points: ChartPoint[];
+}
+
+export interface WeeklyVolumeData {
+  total: ChartPoint[];
+  byMuscleGroup: WeeklyVolumeGroup[];
+}
+
+function buildWeeklyPoints(buckets: Map<number, number>, now: number): ChartPoint[] {
   const points: ChartPoint[] = [];
   for (let week = VOLUME_WEEKS - 1; week >= 0; week -= 1) {
     const weekStart = now - week * WEEK_MS;
-    const value = buckets.get(weekStart) ?? 0;
     points.push({
-      value,
+      value: buckets.get(weekStart) ?? 0,
       label: new Date(weekStart).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
     });
   }
   return points;
+}
+
+export function buildWeeklyVolume(entries: VolumeEntry[]): WeeklyVolumeData {
+  if (entries.length === 0) {
+    return { total: [], byMuscleGroup: [] };
+  }
+
+  const totalBuckets = new Map<number, number>();
+  const groupBuckets = new Map<number, Map<number, number>>();
+  for (const entry of entries) {
+    const weekStart = startOfWeek(new Date(entry.date)).getTime();
+    totalBuckets.set(weekStart, (totalBuckets.get(weekStart) ?? 0) + entry.total_kg);
+    const buckets = groupBuckets.get(entry.muscle_group_id) ?? new Map<number, number>();
+    buckets.set(weekStart, (buckets.get(weekStart) ?? 0) + entry.total_kg);
+    groupBuckets.set(entry.muscle_group_id, buckets);
+  }
+  const now = startOfWeek(new Date()).getTime();
+  return {
+    total: buildWeeklyPoints(totalBuckets, now),
+    byMuscleGroup: [...groupBuckets.entries()]
+      .sort(([firstId], [secondId]) => firstId - secondId)
+      .map(([muscleGroupId, buckets]) => ({
+        muscleGroupId,
+        label: muscleGroupName(muscleGroupId),
+        points: buildWeeklyPoints(buckets, now),
+      })),
+  };
 }
 
 export function to1rmPoints(entries: OneRMEntry[]): ChartPoint[] {
@@ -225,6 +257,7 @@ export function AnalyticsScreen() {
     exercises.find((exercise) => exercise.id === selectedExerciseId)?.name ?? 'Exercise';
 
   const latestWeight = bodyWeights[0] ?? null;
+  const weeklyVolume = buildWeeklyVolume(volume);
   const weightPoints: ChartPoint[] = sortByMeasuredAt(bodyWeights)
     .reverse()
     .map((entry) => ({
@@ -290,10 +323,38 @@ export function AnalyticsScreen() {
 
         <Card testID="analytics.volumeCard" style={styles.spacedCard}>
           <Text style={[styles.cardTitle, { color: theme.text }]}>Weekly volume</Text>
-          <BarChart testID="analytics.volumeChart" bars={buildWeeklyVolume(volume)} />
+          <BarChart testID="analytics.volumeChart" bars={weeklyVolume.total} />
           <Text style={[styles.hint, { color: theme.subtext0 }]}>
             Total kg per week, last {VOLUME_WEEKS} weeks
           </Text>
+          {weeklyVolume.byMuscleGroup.length > 0 ? (
+            <>
+              <Text style={[styles.breakdownTitle, { color: theme.text }]}>By muscle group</Text>
+              {weeklyVolume.byMuscleGroup.map((group, index) => (
+                <View
+                  key={group.muscleGroupId}
+                  testID={`analytics.volumeGroup.${group.muscleGroupId}`}
+                  style={[styles.volumeGroup, { borderTopColor: theme.surface0 }]}
+                >
+                  <Text
+                    testID={`analytics.volumeGroupLabel.${group.muscleGroupId}`}
+                    style={[styles.groupLabel, { color: theme.subtext0 }]}
+                  >
+                    {group.label}
+                  </Text>
+                  <BarChart
+                    testID={`analytics.volumeGroupChart.${group.muscleGroupId}`}
+                    bars={group.points}
+                    color={
+                      [theme.blue, theme.mauve, theme.teal, theme.peach, theme.green, theme.lavender][
+                        index % 6
+                      ]
+                    }
+                  />
+                </View>
+              ))}
+            </>
+          ) : null}
           {volumeError ? <ErrorText testID="analytics.volumeError">{volumeError}</ErrorText> : null}
         </Card>
 
@@ -393,6 +454,20 @@ const styles = StyleSheet.create({
   hint: {
     fontSize: 12,
     marginTop: 8,
+  },
+  breakdownTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 16,
+  },
+  volumeGroup: {
+    borderTopWidth: 1,
+    marginTop: 12,
+    paddingTop: 12,
+  },
+  groupLabel: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   empty: {
     fontSize: 14,

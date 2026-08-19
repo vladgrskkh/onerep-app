@@ -98,21 +98,29 @@ beforeEach(() => {
 });
 
 describe('buildWeeklyVolume', () => {
-  it('buckets entries into the last 8 weeks, oldest first', () => {
+  it('keeps the total and distinct muscle-group series labeled and separate', () => {
     const now = new Date();
-    const weekStart = new Date(now);
-    weekStart.setHours(0, 0, 0, 0);
-    const day = weekStart.getDay() || 7;
-    weekStart.setDate(weekStart.getDate() - day + 1);
 
-    const points = buildWeeklyVolume([
+    const volume = buildWeeklyVolume([
       { date: now.toISOString(), muscle_group_id: 1, total_kg: 1000 },
       { date: now.toISOString(), muscle_group_id: 3, total_kg: 500 },
     ]);
 
-    expect(points).toHaveLength(8);
-    expect(points[points.length - 1].value).toBe(1500);
-    expect(points[0].value).toBe(0);
+    expect(volume.total).toHaveLength(8);
+    expect(volume.total[volume.total.length - 1].value).toBe(1500);
+    expect(volume.total[0].value).toBe(0);
+    expect(volume.byMuscleGroup.map((group) => ({
+      id: group.muscleGroupId,
+      label: group.label,
+      currentWeek: group.points[group.points.length - 1].value,
+    }))).toEqual([
+      { id: 1, label: 'chest', currentWeek: 1000 },
+      { id: 3, label: 'biceps', currentWeek: 500 },
+    ]);
+  });
+
+  it('returns empty total and group series when no volume is logged', () => {
+    expect(buildWeeklyVolume([])).toEqual({ total: [], byMuscleGroup: [] });
   });
 });
 
@@ -186,6 +194,28 @@ describe('AnalyticsScreen', () => {
     );
     expect(bars.length).toBeGreaterThan(0);
     expect(cache.get('progress:volume')).toContain('"total_kg":2500');
+  });
+
+  it('renders separate weekly volume charts labeled by muscle group', async () => {
+    mockGetVolume.mockResolvedValue([
+      { date: new Date().toISOString(), muscle_group_id: 1, total_kg: 1000 },
+      { date: new Date().toISOString(), muscle_group_id: 3, total_kg: 500 },
+    ]);
+    const instance = await renderAnalytics();
+
+    expect(instance.root.findByProps({ testID: 'analytics.volumeGroup.1' })).toBeTruthy();
+    expect(instance.root.findByProps({ testID: 'analytics.volumeGroup.3' })).toBeTruthy();
+    expect(instance.root.findByProps({ testID: 'analytics.volumeGroupLabel.1' }).props.children).toBe('chest');
+    expect(instance.root.findByProps({ testID: 'analytics.volumeGroupLabel.3' }).props.children).toBe('biceps');
+  });
+
+  it('shows the volume chart empty state without muscle-group charts when no volume is logged', async () => {
+    const instance = await renderAnalytics();
+
+    expect(instance.root.findByProps({ testID: 'analytics.volumeChart.empty' })).toBeTruthy();
+    expect(instance.root.findAll(
+      (node) => typeof node.props.testID === 'string' && node.props.testID.startsWith('analytics.volumeGroup.'),
+    )).toHaveLength(0);
   });
 
   it('renders the latest body weight and the weight trend chart', async () => {

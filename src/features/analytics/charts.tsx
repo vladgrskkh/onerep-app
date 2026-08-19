@@ -117,11 +117,12 @@ export function LineChart({ points, height = 140, testID }: LineChartProps) {
 
 export interface BarChartProps {
   bars: ChartPoint[];
+  color?: string;
   height?: number;
   testID?: string;
 }
 
-export function BarChart({ bars, height = 120, testID }: BarChartProps) {
+export function BarChart({ bars, color, height = 120, testID }: BarChartProps) {
   const theme = useTheme();
   const max = bars.length > 0 ? Math.max(...bars.map((bar) => bar.value)) : 0;
 
@@ -146,7 +147,7 @@ export function BarChart({ bars, height = 120, testID }: BarChartProps) {
             </Text>
             <View
               testID={`${testID}.bar.${index}`}
-              style={[styles.bar, { height: barHeight, backgroundColor: theme.blue }]}
+              style={[styles.bar, { height: barHeight, backgroundColor: color ?? theme.blue }]}
             />
             <Text numberOfLines={1} style={[styles.barLabel, { color: theme.subtext0 }]}>
               {point.label ?? ''}
