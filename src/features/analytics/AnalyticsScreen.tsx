@@ -3,6 +3,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'r
 
 import type { BodyWeightEntry, OneRMEntry, VolumeEntry } from '../../shared/api/gym';
 import { gymApi } from '../../shared/api/gym';
+import { ApiError } from '../../shared/api/client';
 import { getLocalDb, type ExerciseLocalRow } from '../../shared/db/database';
 import { newId } from '../../shared/db/ids';
 import { muscleGroupName } from '../../shared/db/muscleGroups';
@@ -112,6 +113,14 @@ function sortByMeasuredAt(entries: BodyWeightEntry[]): BodyWeightEntry[] {
   return [...entries].sort((a, b) => b.measured_at.localeCompare(a.measured_at));
 }
 
+function isNetworkFailure(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 0 &&
+    ['NETWORK', 'NETWORK_ERROR', 'TIMEOUT'].includes(error.code)
+  );
+}
+
 export function AnalyticsScreen() {
   const theme = useTheme();
   const { sync, isSyncing, lastSyncAt } = useSync();
@@ -138,41 +147,62 @@ export function AnalyticsScreen() {
       setOneRm([]);
       return;
     }
+    const db = getLocalDb();
+    const generation = db.getDataGeneration();
     const cached = readCached<OneRMEntry[]>(`progress:1rm:${exerciseId}`);
     if (cached) {
       setOneRm(cached);
     }
     try {
       const entries = await gymApi.progress.get1rm({ exercise_id: exerciseId, from: weeksAgo(12) });
+      if (db.getDataGeneration() !== generation) {
+        return;
+      }
       setOneRm(entries);
       setOneRmError(null);
-      getLocalDb().setProgressCache(`progress:1rm:${exerciseId}`, JSON.stringify(entries));
+      db.setProgressCache(`progress:1rm:${exerciseId}`, JSON.stringify(entries));
     } catch (error) {
+      if (db.getDataGeneration() !== generation) {
+        return;
+      }
       setOneRmError(getUserMessage(error, 'Could not load 1RM history'));
     }
   }, []);
 
   const loadVolume = useCallback(async () => {
+    const db = getLocalDb();
+    const generation = db.getDataGeneration();
     const cached = readCached<VolumeEntry[]>('progress:volume');
     if (cached) {
       setVolume(cached);
     }
     try {
       const entries = await gymApi.progress.getVolume({ from: weeksAgo(VOLUME_WEEKS) });
+      if (db.getDataGeneration() !== generation) {
+        return;
+      }
       setVolume(entries);
       setVolumeError(null);
-      getLocalDb().setProgressCache('progress:volume', JSON.stringify(entries));
+      db.setProgressCache('progress:volume', JSON.stringify(entries));
     } catch (error) {
+      if (db.getDataGeneration() !== generation) {
+        return;
+      }
       setVolumeError(getUserMessage(error, 'Could not load weekly volume'));
     }
   }, []);
 
   const refresh = useCallback(async () => {
+    const db = getLocalDb();
+    const generation = db.getDataGeneration();
     setRefreshing(true);
     try {
       await sync();
-      setExercises(getLocalDb().getExercises());
-      setBodyWeights(sortByMeasuredAt(getLocalDb().getBodyWeights()));
+      if (db.getDataGeneration() !== generation) {
+        return;
+      }
+      setExercises(db.getExercises());
+      setBodyWeights(sortByMeasuredAt(db.getBodyWeights()));
       await Promise.all([loadOneRm(selectedExerciseId), loadVolume()]);
     } finally {
       setRefreshing(false);
@@ -228,13 +258,25 @@ export function AnalyticsScreen() {
     setLogging(true);
     setLogError(null);
     const measuredAt = new Date().toISOString();
+    const db = getLocalDb();
+    const generation = db.getDataGeneration();
     try {
       const entry = await gymApi.progress.logBodyWeight({ weight_kg: weight, measured_at: measuredAt });
-      getLocalDb().upsertRemote('body_weights', entry);
-      setBodyWeights(sortByMeasuredAt(getLocalDb().getBodyWeights()));
+      if (db.getDataGeneration() !== generation) {
+        return;
+      }
+      db.upsertRemote('body_weights', entry);
+      setBodyWeights(sortByMeasuredAt(db.getBodyWeights()));
       setWeightDraft('');
       setLogOpen(false);
     } catch (error) {
+      if (db.getDataGeneration() !== generation) {
+        return;
+      }
+      if (!isNetworkFailure(error)) {
+        setLogError(getUserMessage(error, 'Could not save body weight'));
+        return;
+      }
       // Offline: store locally with a create op; the sync engine pushes it
       // through the body_weights adapter when connectivity returns.
       const local: BodyWeightEntry = {
@@ -243,8 +285,8 @@ export function AnalyticsScreen() {
         measured_at: measuredAt,
         created_at: measuredAt,
       };
-      getLocalDb().upsertBodyWeight(local, { is_dirty: 1, operation: 'create' });
-      setBodyWeights(sortByMeasuredAt(getLocalDb().getBodyWeights()));
+      db.upsertBodyWeight(local, { is_dirty: 1, operation: 'create' });
+      setBodyWeights(sortByMeasuredAt(db.getBodyWeights()));
       setWeightDraft('');
       setLogOpen(false);
       setLogError(getUserMessage(error, 'Saved locally; will sync when possible'));

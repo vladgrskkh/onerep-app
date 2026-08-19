@@ -79,6 +79,7 @@ function Harness({ id = 'single' }: { id?: string }) {
     <View>
       <Text testID={`${id}.syncing`}>{result.isSyncing ? 'yes' : 'no'}</Text>
       <Text testID={`${id}.lastSyncAt`}>{result.lastSyncAt ?? 'none'}</Text>
+      <Text testID={`${id}.lastSyncResult`}>{result.lastSyncResult ? 'set' : 'none'}</Text>
       <Text testID={`${id}.lastError`}>{result.lastError?.message ?? 'none'}</Text>
       <Button testID={`${id}.manual`} title="sync" onPress={() => void result.sync()} />
     </View>
@@ -143,7 +144,7 @@ describe('useSync', () => {
     await act(async () => {});
 
     expect(mockListExercises).not.toHaveBeenCalled();
-    expect(mockNetInfoListeners).toHaveLength(0);
+    expect(mockNetInfoListeners).toHaveLength(1);
   });
 
   it('does not sync while offline', async () => {
@@ -197,6 +198,73 @@ describe('useSync', () => {
     await act(async () => {});
 
     expect(tree.root.findByProps({ testID: 'single.lastSyncAt' }).props.children).toBe('2026-01-02T00:00:00Z');
+  });
+
+  it('resets shared sync metadata when the authenticated account changes', async () => {
+    mockCurrentUser = { id: 'u1' };
+    const tree = await renderAndSettle();
+
+    await act(async () => {
+      await tree.root.findByProps({ testID: 'single.manual' }).props.onPress();
+    });
+    expect(tree.root.findByProps({ testID: 'single.lastSyncAt' }).props.children).not.toBe('none');
+    expect(tree.root.findByProps({ testID: 'single.lastSyncResult' }).props.children).toBe('set');
+
+    mockListExercises.mockRejectedValueOnce(new Error('old account error'));
+    await act(async () => {
+      await tree.root.findByProps({ testID: 'single.manual' }).props.onPress();
+    });
+    expect(tree.root.findByProps({ testID: 'single.lastError' }).props.children).toBe('old account error');
+
+    mockCurrentUser = { id: 'u2' };
+    await act(async () => {
+      tree.update(
+        <SyncProvider>
+          <Harness />
+        </SyncProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(tree.root.findByProps({ testID: 'single.lastSyncAt' }).props.children).toBe('none');
+    expect(tree.root.findByProps({ testID: 'single.lastSyncResult' }).props.children).toBe('none');
+    expect(tree.root.findByProps({ testID: 'single.lastError' }).props.children).toBe('none');
+    expect(mockCreateGymSyncEngine).toHaveBeenCalledTimes(1);
+    expect(mockNetInfoListeners).toHaveLength(1);
+  });
+
+  it('ignores an in-flight sync result after logout', async () => {
+    mockCurrentUser = { id: 'u1' };
+    let releaseSync!: (value: unknown[]) => void;
+    mockListExercises.mockReturnValueOnce(new Promise<unknown[]>((resolve) => {
+      releaseSync = resolve;
+    }));
+    const tree = await renderAndSettle();
+
+    await act(async () => {
+      void tree.root.findByProps({ testID: 'single.manual' }).props.onPress();
+      await Promise.resolve();
+    });
+
+    mockCurrentUser = null;
+    await act(async () => {
+      tree.update(
+        <SyncProvider>
+          <Harness />
+        </SyncProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    releaseSync([]);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(tree.root.findByProps({ testID: 'single.lastSyncAt' }).props.children).toBe('none');
+    expect(tree.root.findByProps({ testID: 'single.lastSyncResult' }).props.children).toBe('none');
+    expect(tree.root.findByProps({ testID: 'single.lastError' }).props.children).toBe('none');
   });
 
   it('shares one engine, listener, and sync state between consumers', async () => {

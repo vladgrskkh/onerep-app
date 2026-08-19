@@ -19,48 +19,67 @@ function toError(error: unknown): Error {
 export function SyncProvider({ children }: SyncProviderProps) {
   const { user } = useAuth();
   const userRef = useRef(user);
-  const [engine] = useState<SyncEngine>(() => createGymSyncEngine(getLocalDb()));
+  const previousUserIdRef = useRef(user?.id ?? null);
+  const [store] = useState(() => getLocalDb());
+  const [engine] = useState<SyncEngine>(() => createGymSyncEngine(store));
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(() => engine.getLastSyncedAt());
   const [lastSyncResult, setLastSyncResult] = useState<SyncResult | null>(null);
   const [lastError, setLastError] = useState<Error | null>(null);
 
   useEffect(() => {
+    const previousUserId = previousUserIdRef.current;
+    const nextUserId = user?.id ?? null;
     userRef.current = user;
+    previousUserIdRef.current = nextUserId;
+
+    if (previousUserId === nextUserId) {
+      return;
+    }
+    setIsSyncing(false);
+    setLastSyncAt(null);
+    setLastSyncResult(null);
+    setLastError(null);
   }, [user]);
 
   const sync = useCallback(async (): Promise<SyncResult | null> => {
-    if (!userRef.current) {
+    const accountId = userRef.current?.id;
+    if (!accountId) {
       return null;
     }
+    const generation = store.getDataGeneration();
+    const isCurrentAccount = () =>
+      userRef.current?.id === accountId && store.getDataGeneration() === generation;
+
     setIsSyncing(true);
     setLastError(null);
     try {
       const result = await engine.sync();
-      if (result) {
+      if (result && isCurrentAccount()) {
         setLastSyncAt(result.lastSyncedAt);
         setLastSyncResult(result);
       }
       return result;
     } catch (error) {
-      setLastError(toError(error));
+      if (isCurrentAccount()) {
+        setLastError(toError(error));
+      }
       return null;
     } finally {
-      setIsSyncing(false);
+      if (isCurrentAccount()) {
+        setIsSyncing(false);
+      }
     }
-  }, [engine]);
+  }, [engine, store]);
 
   useEffect(() => {
-    if (!user) {
-      return;
-    }
     const unsubscribe = NetInfo.addEventListener((state) => {
       if (state.isConnected && userRef.current) {
         void sync();
       }
     });
     return unsubscribe;
-  }, [user, sync]);
+  }, [sync]);
 
   const value = useMemo(
     () => ({ sync, isSyncing, lastSyncAt, lastSyncResult, lastError }),

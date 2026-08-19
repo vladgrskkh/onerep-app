@@ -40,6 +40,7 @@ const cache = new Map<string, string>();
 const mockGetExercises = jest.fn(() => exercises);
 const mockGetBodyWeights = jest.fn(() => bodyWeights);
 const mockGetProgressCache = jest.fn((key: string) => cache.get(key) ?? null);
+const mockGetDataGeneration = jest.fn(() => 0);
 const mockSetProgressCache = jest.fn((key: string, value: string) => {
   cache.set(key, value);
 });
@@ -52,6 +53,7 @@ jest.mock('../../../shared/db/database', () => ({
     getExercises: mockGetExercises,
     getBodyWeights: mockGetBodyWeights,
     getProgressCache: mockGetProgressCache,
+    getDataGeneration: mockGetDataGeneration,
     setProgressCache: mockSetProgressCache,
     upsertRemote: mockUpsertRemote,
     upsertBodyWeight: mockUpsertBodyWeight,
@@ -79,6 +81,16 @@ const mockGet1rm = gymApi.progress.get1rm as jest.Mock<(...args: any[]) => any>;
 const mockGetVolume = gymApi.progress.getVolume as jest.Mock<(...args: any[]) => any>;
 const mockLogBodyWeight = gymApi.progress.logBodyWeight as jest.Mock<(...args: any[]) => any>;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 // eslint-disable-next-line import/first
 import { AnalyticsScreen, buildWeeklyVolume, to1rmPoints } from '../AnalyticsScreen';
 
@@ -93,6 +105,7 @@ async function renderAnalytics() {
 beforeEach(() => {
   jest.clearAllMocks();
   cache.clear();
+  mockGetDataGeneration.mockReturnValue(0);
   mockGet1rm.mockResolvedValue([]);
   mockGetVolume.mockResolvedValue([]);
 });
@@ -157,6 +170,27 @@ describe('AnalyticsScreen', () => {
     expect(cache.get('progress:1rm:e1')).toContain('"estimated_1rm":110');
   });
 
+  it('does not repopulate 1RM state or cache after the local account generation changes', async () => {
+    const response = deferred<OneRMEntry[]>();
+    mockGet1rm.mockReturnValue(response.promise);
+    let instance!: ReturnType<typeof create>;
+
+    await act(async () => {
+      instance = create(<AnalyticsScreen />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    mockGetDataGeneration.mockReturnValue(1);
+    response.resolve(oneRmEntries);
+    await act(async () => {
+      await response.promise;
+    });
+
+    expect(mockSetProgressCache).not.toHaveBeenCalledWith('progress:1rm:e1', expect.any(String));
+    expect(instance.root.findByProps({ testID: 'analytics.1rmEmpty' })).toBeTruthy();
+  });
+
   it('switches exercises from the selector and reloads 1RM', async () => {
     mockGet1rm.mockResolvedValue(oneRmEntries);
     const instance = await renderAnalytics();
@@ -194,6 +228,27 @@ describe('AnalyticsScreen', () => {
     );
     expect(bars.length).toBeGreaterThan(0);
     expect(cache.get('progress:volume')).toContain('"total_kg":2500');
+  });
+
+  it('does not repopulate volume state or cache after the local account generation changes', async () => {
+    const response = deferred<VolumeEntry[]>();
+    mockGetVolume.mockReturnValue(response.promise);
+    let instance!: ReturnType<typeof create>;
+
+    await act(async () => {
+      instance = create(<AnalyticsScreen />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    mockGetDataGeneration.mockReturnValue(1);
+    response.resolve(volumeEntries);
+    await act(async () => {
+      await response.promise;
+    });
+
+    expect(mockSetProgressCache).not.toHaveBeenCalledWith('progress:volume', expect.any(String));
+    expect(instance.root.findByProps({ testID: 'analytics.volumeChart.empty' })).toBeTruthy();
   });
 
   it('renders separate weekly volume charts labeled by muscle group', async () => {
@@ -274,5 +329,83 @@ describe('AnalyticsScreen', () => {
     expect(instance.root.findByProps({ testID: 'analytics.weightError' }).props.children).toBe(
       'Offline',
     );
+  });
+
+  it('does not store a successful weight response after the local account generation changes', async () => {
+    const response = deferred<BodyWeightEntry>();
+    mockLogBodyWeight.mockReturnValue(response.promise);
+    const instance = await renderAnalytics();
+
+    await act(async () => {
+      instance.root.findByProps({ testID: 'analytics.weightLog' }).props.onPress();
+    });
+    await act(async () => {
+      instance.root.findByProps({ testID: 'analytics.weightInput' }).props.onChangeText('82');
+    });
+    await act(async () => {
+      void instance.root.findByProps({ testID: 'analytics.weightSubmit' }).props.onPress();
+      await Promise.resolve();
+    });
+
+    mockGetDataGeneration.mockReturnValue(1);
+    response.resolve({
+      id: 'bw3',
+      weight_kg: 82,
+      measured_at: '2026-02-03T08:00:00Z',
+      created_at: '2026-02-03T08:00:00Z',
+    });
+    await act(async () => {
+      await response.promise;
+    });
+
+    expect(mockUpsertRemote).not.toHaveBeenCalled();
+  });
+
+  it('does not queue a stale offline weight response after the local account generation changes', async () => {
+    const response = deferred<never>();
+    mockLogBodyWeight.mockReturnValue(response.promise);
+    const instance = await renderAnalytics();
+
+    await act(async () => {
+      instance.root.findByProps({ testID: 'analytics.weightLog' }).props.onPress();
+    });
+    await act(async () => {
+      instance.root.findByProps({ testID: 'analytics.weightInput' }).props.onChangeText('82');
+    });
+    await act(async () => {
+      void instance.root.findByProps({ testID: 'analytics.weightSubmit' }).props.onPress();
+      await Promise.resolve();
+    });
+
+    mockGetDataGeneration.mockReturnValue(1);
+    response.reject(new ApiError(0, 'NETWORK_ERROR', 'offline', 'Offline'));
+    await act(async () => {
+      await expect(response.promise).rejects.toBeInstanceOf(ApiError);
+    });
+
+    expect(mockUpsertBodyWeight).not.toHaveBeenCalled();
+  });
+
+  it('surfaces non-network weight errors without queueing a dirty row', async () => {
+    mockLogBodyWeight.mockRejectedValue(
+      new ApiError(422, 'VALIDATION_ERROR', 'bad weight', 'Weight is not acceptable'),
+    );
+    const instance = await renderAnalytics();
+
+    await act(async () => {
+      instance.root.findByProps({ testID: 'analytics.weightLog' }).props.onPress();
+    });
+    await act(async () => {
+      instance.root.findByProps({ testID: 'analytics.weightInput' }).props.onChangeText('82');
+    });
+    await act(async () => {
+      await instance.root.findByProps({ testID: 'analytics.weightSubmit' }).props.onPress();
+    });
+
+    expect(mockUpsertBodyWeight).not.toHaveBeenCalled();
+    expect(instance.root.findByProps({ testID: 'analytics.weightError' }).props.children).toBe(
+      'Weight is not acceptable',
+    );
+    expect(instance.root.findByProps({ testID: 'analytics.weightSubmit' })).toBeTruthy();
   });
 });
