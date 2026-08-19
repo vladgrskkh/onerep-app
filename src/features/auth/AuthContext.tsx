@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 
 import { ApiError, setRefreshCallback, setTokenProvider } from '../../shared/api/client';
 import { authApi, TokenPair, UpdateProfileRequest, UserProfile } from '../../shared/api/auth';
+import { getLocalDb } from '../../shared/db/database';
 import { decodeJwtPayload } from './jwt';
 
 const ACCESS_TOKEN_KEY = 'onerep.access_token';
@@ -34,6 +35,7 @@ async function saveTokenPair(pair: TokenPair): Promise<void> {
 async function clearTokens(): Promise<void> {
   accessToken = null;
   refreshToken = null;
+  getLocalDb().clearPrivateData();
   await SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY);
   await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
   await SecureStore.deleteItemAsync(USER_KEY);

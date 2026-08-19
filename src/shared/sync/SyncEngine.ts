@@ -70,7 +70,7 @@ export function isConflictError(error: unknown): boolean {
 }
 
 export class SyncEngine {
-  private inFlight: Promise<SyncResult> | null = null;
+  private inFlight: { generation: number; promise: Promise<SyncResult> } | null = null;
   private readonly store: SyncStore;
   private readonly adapters: SyncTableAdapter[];
   private readonly clock: () => string;
@@ -82,19 +82,24 @@ export class SyncEngine {
   }
 
   sync(): Promise<SyncResult> {
-    if (!this.inFlight) {
-      this.inFlight = this.run().finally(() => {
-        this.inFlight = null;
+    const generation = this.store.getDataGeneration();
+    if (!this.inFlight || this.inFlight.generation !== generation) {
+      const run = this.run(generation);
+      const promise = run.finally(() => {
+        if (this.inFlight?.promise === promise) {
+          this.inFlight = null;
+        }
       });
+      this.inFlight = { generation, promise };
     }
-    return this.inFlight;
+    return this.inFlight.promise;
   }
 
   getLastSyncedAt(): string | null {
     return this.store.getLastSyncedAt();
   }
 
-  async pushLocal(): Promise<PushResult> {
+  async pushLocal(generation = this.store.getDataGeneration()): Promise<PushResult> {
     const result: PushResult = {
       pushed: 0,
       conflicts: 0,
@@ -105,6 +110,9 @@ export class SyncEngine {
     };
 
     for (const adapter of this.adapters) {
+      if (!this.isCurrentGeneration(generation)) {
+        return result;
+      }
       const dirty = this.store.getDirtyRows(adapter.table);
       const ordered: LocalRow[] = [];
       for (const operation of PUSH_ORDER) {
@@ -112,21 +120,30 @@ export class SyncEngine {
       }
 
       for (const row of ordered) {
-        await this.pushRow(adapter, row, result);
+        if (!this.isCurrentGeneration(generation)) {
+          return result;
+        }
+        await this.pushRow(adapter, row, result, generation);
       }
     }
 
     return result;
   }
 
-  async pullRemote(): Promise<PullResult> {
+  async pullRemote(generation = this.store.getDataGeneration()): Promise<PullResult> {
     const since = this.store.getLastSyncedAt() ?? undefined;
     const pulledAt = this.clock();
     let pulled = 0;
 
     for (const adapter of this.adapters) {
+      if (!this.isCurrentGeneration(generation)) {
+        return { pulled, lastSyncedAt: null };
+      }
       const rows = await adapter.pull(since);
       for (const row of rows) {
+        if (!this.isCurrentGeneration(generation)) {
+          return { pulled, lastSyncedAt: null };
+        }
         if (this.store.isDirtyRow(adapter.table, row.id)) {
           continue;
         }
@@ -135,14 +152,17 @@ export class SyncEngine {
       }
     }
 
+    if (!this.isCurrentGeneration(generation)) {
+      return { pulled, lastSyncedAt: null };
+    }
     this.store.setLastSyncedAt(pulledAt);
     return { pulled, lastSyncedAt: pulledAt };
   }
 
-  private async run(): Promise<SyncResult> {
+  private async run(generation: number): Promise<SyncResult> {
     const startedAt = this.clock();
-    const push = await this.pushLocal();
-    const pull = await this.pullRemote();
+    const push = await this.pushLocal(generation);
+    const pull = await this.pullRemote(generation);
     return {
       ...push,
       ...pull,
@@ -155,7 +175,11 @@ export class SyncEngine {
     adapter: SyncTableAdapter,
     row: LocalRow,
     result: PushResult,
+    generation: number,
   ): Promise<void> {
+    if (!this.isCurrentGeneration(generation)) {
+      return;
+    }
     const handler =
       row.operation === 'delete'
         ? adapter.pushDelete
@@ -173,6 +197,9 @@ export class SyncEngine {
 
     try {
       const server = await handler(row);
+      if (!this.isCurrentGeneration(generation)) {
+        return;
+      }
       if (row.operation === 'delete') {
         this.store.removeRow(adapter.table, row.id);
       } else if (server) {
@@ -183,7 +210,7 @@ export class SyncEngine {
       if (adapter.isConflict(error)) {
         result.conflicts += 1;
         result.droppedChangeIds.push(`${adapter.table}:${row.id}`);
-        await this.recoverFromConflict(adapter, row, result);
+        await this.recoverFromConflict(adapter, row, result, generation);
       } else {
         result.errors.push({
           table: adapter.table,
@@ -199,10 +226,17 @@ export class SyncEngine {
     adapter: SyncTableAdapter,
     row: LocalRow,
     result: PushResult,
+    generation: number,
   ): Promise<void> {
+    if (!this.isCurrentGeneration(generation)) {
+      return;
+    }
     this.store.removeRow(adapter.table, row.id);
     try {
       const server = await adapter.fetchOne(row.id);
+      if (!this.isCurrentGeneration(generation)) {
+        return;
+      }
       if (server) {
         this.store.upsertRemote(adapter.table, server);
       }
@@ -214,6 +248,10 @@ export class SyncEngine {
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private isCurrentGeneration(generation: number): boolean {
+    return this.store.getDataGeneration() === generation;
   }
 }
 
@@ -315,6 +353,9 @@ async function pushWorkoutCreate(row: WorkoutLocalRow): Promise<Workout> {
     for (const set of exercise.sets ?? []) {
       await gymApi.workouts.logSet(started.id, serverExercise.id, logSetRequest(set));
     }
+  }
+  if (row.finished_at) {
+    return gymApi.workouts.finish(started.id);
   }
   return gymApi.workouts.get(started.id);
 }

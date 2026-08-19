@@ -412,9 +412,12 @@ export interface SyncStore {
   upsertRemote(table: SyncTable, row: ServerRow): void;
   getLastSyncedAt(): string | null;
   setLastSyncedAt(value: string): void;
+  getDataGeneration(): number;
 }
 
 export class LocalDb implements SyncStore {
+  private dataGeneration = 0;
+
   constructor(private readonly conn: SqlConnection) {}
 
   init(): void {
@@ -720,6 +723,24 @@ export class LocalDb implements SyncStore {
 
   setLastSyncedAt(value: string): void {
     this.conn.runSync(UPSERT_SYNC_STATE_SQL, value);
+  }
+
+  clearPrivateData(): void {
+    this.conn.execSync(
+      [
+        'DELETE FROM exercises;',
+        'DELETE FROM templates;',
+        'DELETE FROM workouts;',
+        'DELETE FROM body_weights;',
+        'DELETE FROM progress_cache;',
+        'DELETE FROM sync_state;',
+      ].join('\n'),
+    );
+    this.dataGeneration += 1;
+  }
+
+  getDataGeneration(): number {
+    return this.dataGeneration;
   }
 
   // -- progress cache --------------------------------------------------------------

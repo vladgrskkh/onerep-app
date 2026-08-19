@@ -401,6 +401,23 @@ describe('LocalDb', () => {
     expect(db.getLastSyncedAt()).toBeNull();
   });
 
+  it('clears all account-private cache tables and advances the data generation', () => {
+    const db = new LocalDb(conn);
+
+    expect(db.getDataGeneration()).toBe(0);
+
+    db.clearPrivateData();
+
+    expect(mockConn().execSync).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM exercises;'),
+    );
+    const purgeSql = mockConn().execSync.mock.calls[0][0] as string;
+    for (const table of ['templates', 'workouts', 'body_weights', 'progress_cache', 'sync_state']) {
+      expect(purgeSql).toContain(`DELETE FROM ${table};`);
+    }
+    expect(db.getDataGeneration()).toBe(1);
+  });
+
   it('setProgressCache upserts a JSON payload and getProgressCache reads it back', () => {
     const db = new LocalDb(conn);
     db.setProgressCache('progress:1rm:e1', '[{"date":"2026-01-01","estimated_1rm":100}]');

@@ -169,6 +169,38 @@ describe('SyncEngine.pushLocal', () => {
     expect(result.pushed).toBe(1);
   });
 
+  it('does not let an in-flight sync write old-account data after a store reset', async () => {
+    let releasePush!: (row: ServerRow) => void;
+    let markPushStarted!: () => void;
+    const pushStarted = new Promise<void>((resolve) => {
+      markPushStarted = resolve;
+    });
+    const pushResult = new Promise<ServerRow>((resolve) => {
+      releasePush = resolve;
+    });
+    const adapter = makeAdapter('exercises', {
+      pushUpdate: jest.fn(async () => {
+        markPushStarted();
+        return pushResult;
+      }),
+      pull: jest.fn(async () => []),
+    });
+    store.seed('exercises', dirtyLocalRow({ id: 'e1', operation: 'update' }));
+    const engine = makeEngine(store, [adapter]);
+
+    const oldSync = engine.sync();
+    await pushStarted;
+    store.clearPrivateData();
+    const nextSync = engine.sync();
+    releasePush(serverRow({ id: 'e1' }));
+
+    await Promise.all([oldSync, nextSync]);
+
+    expect(store.calls.markSynced).toHaveLength(0);
+    expect(adapter.pull).toHaveBeenCalledTimes(1);
+    expect(store.getLastSyncedAt()).not.toBeNull();
+  });
+
   it('skips rows whose operation has no API support and keeps them dirty', async () => {
     const createOnly = makeAdapter('exercises', { pushUpdate: undefined, pushDelete: undefined });
     store.seed('exercises', dirtyLocalRow({ id: 'e1', operation: 'update' }));
