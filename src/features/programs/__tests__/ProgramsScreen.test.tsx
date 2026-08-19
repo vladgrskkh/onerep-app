@@ -159,9 +159,11 @@ describe('ProgramsScreen', () => {
     expect(mockCreateTemplate).toHaveBeenCalled();
 
     act(() => {
-      lastProps(mockCreateTemplate).onCreated({ id: 't9' });
+      lastProps(mockCreateTemplate).onCreated({ id: 'server-t9' });
     });
-    expect(mockTemplateDetail.mock.calls[mockTemplateDetail.mock.calls.length - 1][0]).toMatchObject({ templateId: 't9' });
+    expect(mockTemplateDetail.mock.calls[mockTemplateDetail.mock.calls.length - 1][0]).toMatchObject({
+      templateId: 'server-t9',
+    });
   });
 
   it('navigates into exercise detail and create', () => {
