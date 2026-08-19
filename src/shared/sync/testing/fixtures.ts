@@ -4,6 +4,7 @@ import type { SyncTable } from '../../db/schema';
 export class FakeSyncStore implements SyncStore {
   rows = new Map<SyncTable, Map<string, LocalRow>>();
   lastSyncedAt: string | null = null;
+  dataGeneration = 0;
   calls: { markSynced: [SyncTable, string, ServerRow][]; removeRow: [SyncTable, string][]; upsertRemote: [SyncTable, ServerRow][] } = {
     markSynced: [],
     removeRow: [],
@@ -85,6 +86,16 @@ export class FakeSyncStore implements SyncStore {
 
   setLastSyncedAt(value: string): void {
     this.lastSyncedAt = value;
+  }
+
+  clearPrivateData(): void {
+    this.rows.clear();
+    this.lastSyncedAt = null;
+    this.dataGeneration += 1;
+  }
+
+  getDataGeneration(): number {
+    return this.dataGeneration;
   }
 }
 

@@ -118,7 +118,8 @@ export function CreateTemplateScreen({ onCreated }: CreateTemplateScreenProps) {
         }
       }
 
-      onCreated?.(template);
+      const created = getLocalDb().findTemplateByClientID(template.id) ?? template;
+      onCreated?.(created);
     } catch (submitError) {
       setError(getUserMessage(submitError, 'Could not create the template'));
     } finally {

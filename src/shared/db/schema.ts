@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS sync_state (
   value TEXT NOT NULL
 );
 
+-- Local-only cache for server-computed progress payloads (1RM, volume) that
+-- the sync engine does not pull; screens write fresh API responses here and
+-- fall back to the cache when offline.
+CREATE TABLE IF NOT EXISTS progress_cache (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_exercises_updated_at ON exercises (updated_at);
 CREATE INDEX IF NOT EXISTS idx_exercises_is_dirty ON exercises (is_dirty);
 CREATE INDEX IF NOT EXISTS idx_exercises_client_id ON exercises (client_id);

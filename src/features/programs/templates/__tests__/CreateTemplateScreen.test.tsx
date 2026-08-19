@@ -51,10 +51,10 @@ const mockPublish = gymApi.templates.publish as jest.Mock<(...args: any[]) => an
 // eslint-disable-next-line import/first
 import { CreateTemplateScreen } from '../CreateTemplateScreen';
 
-async function renderCreate() {
+async function renderCreate(onCreated?: (template: Template) => void) {
   let instance: ReturnType<typeof create>;
   await act(async () => {
-    instance = create(<CreateTemplateScreen />);
+    instance = create(<CreateTemplateScreen onCreated={onCreated} />);
   });
   return instance!;
 }
@@ -117,7 +117,34 @@ describe('CreateTemplateScreen', () => {
       { is_dirty: 1, operation: 'create', client_id: expect.any(String) },
     );
     expect(mockSync).toHaveBeenCalled();
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ name: 'Push day' }));
+    const created = mockUpsertTemplate.mock.calls[0]?.[0] as Template;
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: created.id, name: 'Push day' }));
+  });
+
+  it('passes the server row to the callback after an online create re-keys the template', async () => {
+    const onCreated = jest.fn();
+    mockFindTemplateByClientID.mockReturnValue({
+      id: 'server-t1',
+      client_id: 'client-t1',
+      name: 'Push day',
+      is_public: false,
+      created_at: '2026-02-03T12:00:00Z',
+      updated_at: '2026-02-03T12:00:00Z',
+      version: 1,
+      is_dirty: 0,
+      operation: null,
+      last_synced_at: '2026-02-03T12:00:00Z',
+    });
+    const instance = await renderCreate(onCreated);
+
+    await changeText(instance, 'createTemplate.name', 'Push day');
+    await submit(instance);
+
+    const created = mockUpsertTemplate.mock.calls[0]?.[0] as Template;
+    expect(mockFindTemplateByClientID).toHaveBeenCalledWith(created.id);
+    expect(onCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'server-t1', client_id: 'client-t1' }),
+    );
   });
 
   it('publishes via the API when the toggle is on and the create was pushed', async () => {

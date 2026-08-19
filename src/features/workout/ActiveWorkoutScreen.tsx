@@ -209,6 +209,9 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
     setWorkout(local);
   };
 
+  const isCurrentDataGeneration = (generation: number) =>
+    getLocalDb().getDataGeneration() === generation;
+
   const openLogForm = (exerciseId: string) => setLogForm({ ...EMPTY_FORM, exerciseId });
 
   const submitSet = async () => {
@@ -246,6 +249,7 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
         rest_seconds: request.rest_seconds,
         is_warmup: request.is_warmup ?? false,
       };
+      const dataGeneration = getLocalDb().getDataGeneration();
 
       let saved: WorkoutSetWithPr;
       if (current.is_dirty === 1) {
@@ -256,12 +260,17 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
       } else {
         try {
           const result = await gymApi.workouts.logSet(current.id, exerciseId, request);
+          if (!isCurrentDataGeneration(dataGeneration)) {
+            return;
+          }
           saved = result;
           persist(current, appendSet(current, exerciseId, result), false, null);
         } catch (postError) {
-          // Offline: keep the set locally and mark the row dirty. Note: the
-          // sync engine has no workout update push yet, so this set stays
-          // local until that lands.
+          if (!isCurrentDataGeneration(dataGeneration)) {
+            return;
+          }
+          // Offline: keep the set locally and mark the row dirty. The sync
+          // engine replays this workout update during the next sync push.
           saved = pendingSet;
           persist(current, appendSet(current, exerciseId, pendingSet), true, 'update');
           setError(
@@ -294,11 +303,15 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
       return;
     }
     const { workout: next, workoutExercise } = appendWorkoutExercise(current, exerciseId);
+    const dataGeneration = getLocalDb().getDataGeneration();
     if (current.is_dirty === 1) {
       persist(current, next, true, current.operation ?? 'create');
     } else {
       try {
         const serverExercise = await gymApi.workouts.addExercise(current.id, { exercise_id: exerciseId });
+        if (!isCurrentDataGeneration(dataGeneration)) {
+          return;
+        }
         persist(
           current,
           {
@@ -311,6 +324,9 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
           null,
         );
       } catch (addError) {
+        if (!isCurrentDataGeneration(dataGeneration)) {
+          return;
+        }
         persist(current, next, true, 'update');
         setError(getUserMessage(addError, 'Saved locally; will sync when possible'));
       }
@@ -323,23 +339,30 @@ export function ActiveWorkoutScreen({ workoutId, onWorkoutFinished }: ActiveWork
   const finishWorkout = async () => {
     setFinishing(true);
     setError(null);
+    let dataGeneration: number | null = null;
     try {
       const current = resolveCurrent();
       if (!current) {
         setError('Workout not found');
         return;
       }
+      dataGeneration = getLocalDb().getDataGeneration();
       const finished = await gymApi.workouts.finish(current.id);
+      if (!isCurrentDataGeneration(dataGeneration)) {
+        return;
+      }
       getLocalDb().upsertRemote('workouts', finished);
       onWorkoutFinished?.(finished);
     } catch (finishError) {
-      // Offline: record the finish locally. Note: no workout update push in
-      // the sync engine yet, so the finished_at won't reach the server until
-      // that lands.
+      if (dataGeneration === null || !isCurrentDataGeneration(dataGeneration)) {
+        return;
+      }
+      // Offline: record the finish locally; the sync engine replays this
+      // workout update during the next sync push.
       const current = resolveCurrent();
       if (current) {
         const finished = { ...current, finished_at: new Date().toISOString() };
-        persist(current, finished, current.is_dirty === 1, current.operation ?? 'update');
+        persist(current, finished, true, current.operation ?? 'update');
         onWorkoutFinished?.(finished);
       }
       setError(getUserMessage(finishError, 'Finish saved locally; will sync when possible'));

@@ -38,6 +38,27 @@ jest.mock('../../../shared/api/auth', () => ({
   },
 }));
 
+const mockLocalPrivateData = {
+  workouts: ['user-1-workout'],
+  bodyWeights: ['user-1-weight'],
+  exercises: ['user-1-exercise'],
+  templates: ['user-1-template'],
+  progressCache: ['user-1-progress'],
+  syncState: ['user-1-cursor'],
+};
+const mockClearPrivateData = jest.fn(() => {
+  mockLocalPrivateData.workouts = [];
+  mockLocalPrivateData.bodyWeights = [];
+  mockLocalPrivateData.exercises = [];
+  mockLocalPrivateData.templates = [];
+  mockLocalPrivateData.progressCache = [];
+  mockLocalPrivateData.syncState = [];
+});
+
+jest.mock('../../../shared/db/database', () => ({
+  getLocalDb: jest.fn(() => ({ clearPrivateData: mockClearPrivateData })),
+}));
+
 // eslint-disable-next-line import/first
 import { authApi } from '../../../shared/api/auth';
 // eslint-disable-next-line import/first
@@ -113,9 +134,7 @@ function press(instance: ReturnType<typeof create>, testID: string) {
 }
 
 async function flushAsync() {
-  for (let i = 0; i < 20; i++) {
-    await Promise.resolve();
-  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 function makeJwt(userId: string): string {
@@ -134,6 +153,12 @@ const mockProfile = {
 beforeEach(() => {
   (SecureStore as unknown as { __store: Map<string, string> }).__store.clear();
   jest.clearAllMocks();
+  mockLocalPrivateData.workouts = ['user-1-workout'];
+  mockLocalPrivateData.bodyWeights = ['user-1-weight'];
+  mockLocalPrivateData.exercises = ['user-1-exercise'];
+  mockLocalPrivateData.templates = ['user-1-template'];
+  mockLocalPrivateData.progressCache = ['user-1-progress'];
+  mockLocalPrivateData.syncState = ['user-1-cursor'];
   lastError = {};
   registeredRefreshCallback = null;
 });
@@ -293,6 +318,39 @@ describe('AuthProvider', () => {
     expect(store.get('onerep.refresh_token')).toBeUndefined();
     expect(store.get('onerep.user')).toBeUndefined();
     expect(instance!.root.findByProps({ testID: 'user' }).props.children).toBe('none');
+  });
+
+  it('purges the previous account cache before the next account can sign in', async () => {
+    const store = (SecureStore as unknown as { __store: Map<string, string> }).__store;
+    store.set('onerep.access_token', 'access-1');
+    store.set('onerep.refresh_token', 'refresh-1');
+    store.set('onerep.user', JSON.stringify(mockProfile));
+    api.logout.mockResolvedValue(undefined);
+    api.login.mockResolvedValue({
+      access_token: makeJwt('user-2'),
+      refresh_token: makeJwt('user-2'),
+      expires_in: 900,
+    });
+    api.getProfile.mockResolvedValue({ ...mockProfile, id: 'user-2', display_name: 'Bea' });
+
+    let instance: ReturnType<typeof create> | null = null;
+    await act(async () => {
+      instance = renderHarness();
+      await flushAsync();
+    });
+    await press(instance!, 'doLogout');
+    await press(instance!, 'doLogin');
+
+    expect(mockClearPrivateData).toHaveBeenCalledTimes(1);
+    expect(mockLocalPrivateData).toEqual({
+      workouts: [],
+      bodyWeights: [],
+      exercises: [],
+      templates: [],
+      progressCache: [],
+      syncState: [],
+    });
+    expect(instance!.root.findByProps({ testID: 'user' }).props.children).toBe('Bea');
   });
 
   it('registers a refresh callback that stores the new pair for the API client', async () => {

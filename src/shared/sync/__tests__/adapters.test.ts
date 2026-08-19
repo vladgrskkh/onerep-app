@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { ApiError } from '../../api/client';
 import { gymApi } from '../../api/gym';
-import type { LocalRow, SyncStore } from '../../db/database';
+import type { LocalRow, SyncStore, WorkoutLocalRow } from '../../db/database';
 import { createGymSyncEngine, isConflictError } from '../SyncEngine';
 import { FakeSyncStore, dirtyLocalRow, serverRow } from '../testing/fixtures';
 
@@ -28,6 +28,7 @@ jest.mock('../../api/gym', () => ({
       get: jest.fn(async () => ({ id: 'w1' })),
       addExercise: jest.fn(async () => ({ id: 'we-server' })),
       logSet: jest.fn(async () => ({ id: 's-server' })),
+      finish: jest.fn(async () => ({ id: 'w1', finished_at: '2026-01-01T10:00:00Z' })),
     },
     progress: {
       getBodyWeight: jest.fn(async () => []),
@@ -178,6 +179,118 @@ describe('gymApi adapters', () => {
     ]);
   });
 
+  it('replays a locally finished workout create as finished', async () => {
+    const store = new FakeSyncStore();
+    api.workouts.start.mockResolvedValue(serverRow({ id: 'server-w1' }));
+    api.workouts.addExercise.mockResolvedValue({ id: 'we-server' });
+    api.workouts.finish.mockResolvedValue(
+      serverRow({ id: 'server-w1', finished_at: '2026-01-01T10:00:00Z' }),
+    );
+    store.seed(
+      'workouts',
+      dirtyLocalRow({
+        id: 'w-local',
+        operation: 'create',
+        template_id: 't1',
+        finished_at: '2026-01-01T10:00:00Z',
+      }) as unknown as LocalRow,
+    );
+
+    await createGymSyncEngine(store).sync();
+
+    expect(api.workouts.finish).toHaveBeenCalledWith('server-w1');
+    expect(store.calls.markSynced).toEqual([
+      [
+        'workouts',
+        'w-local',
+        expect.objectContaining({ id: 'server-w1', finished_at: '2026-01-01T10:00:00Z' }),
+      ],
+    ]);
+  });
+
+  it('replays a synced workout finish update', async () => {
+    const store = new FakeSyncStore();
+    api.workouts.finish.mockResolvedValue(
+      serverRow({ id: 'server-w1', finished_at: '2026-01-01T10:00:00Z' }),
+    );
+    store.seed(
+      'workouts',
+      dirtyLocalRow({
+        id: 'server-w1',
+        operation: 'update',
+        finished_at: '2026-01-01T10:00:00Z',
+      }) as unknown as LocalRow,
+    );
+
+    await createGymSyncEngine(store).pushLocal();
+
+    expect(api.workouts.finish).toHaveBeenCalledWith('server-w1');
+    expect(store.calls.markSynced).toEqual([
+      ['workouts', 'server-w1', expect.objectContaining({ id: 'server-w1' })],
+    ]);
+  });
+
+  it.each([
+    ['start'],
+    ['addExercise'],
+    ['logSet'],
+    ['finish'],
+  ])('stops a workout create replay after a generation reset during %s', async (resetAfter) => {
+    const store = new FakeSyncStore();
+    const row = dirtyLocalRow({
+      id: 'w-local',
+      operation: 'create',
+      finished_at: '2026-01-01T10:00:00Z',
+      exercises: [
+        {
+          id: 'we-local',
+          exercise_id: 'e1',
+          sort_order: 0,
+          sets: [{ id: 's-local', set_number: 1, weight_kg: 100, reps: 5, is_warmup: false }],
+        },
+      ],
+    }) as WorkoutLocalRow;
+    store.seed('workouts', row as unknown as LocalRow);
+    api.workouts.start.mockResolvedValue(serverRow({ id: 'server-w1' }));
+    api.workouts.addExercise.mockResolvedValue({ id: 'we-server' });
+    api.workouts.logSet.mockResolvedValue({ id: 's-server' });
+    api.workouts.finish.mockResolvedValue(serverRow({ id: 'server-w1', finished_at: row.finished_at }));
+
+    const reset = () => store.clearPrivateData();
+    if (resetAfter === 'start') {
+      api.workouts.start.mockImplementationOnce(async () => {
+        const response = serverRow({ id: 'server-w1' });
+        reset();
+        return response;
+      });
+    } else if (resetAfter === 'addExercise') {
+      api.workouts.addExercise.mockImplementationOnce(async () => {
+        reset();
+        return { id: 'we-server' };
+      });
+    } else if (resetAfter === 'logSet') {
+      api.workouts.logSet.mockImplementationOnce(async () => {
+        reset();
+        return { id: 's-server' };
+      });
+    } else {
+      api.workouts.finish.mockImplementationOnce(async () => {
+        reset();
+        return serverRow({ id: 'server-w1', finished_at: row.finished_at });
+      });
+    }
+
+    await createGymSyncEngine(store).pushLocal();
+
+    expect(api.workouts.start).toHaveBeenCalledTimes(1);
+    expect(api.workouts.addExercise).toHaveBeenCalledTimes(resetAfter !== 'start' ? 1 : 0);
+    expect(api.workouts.logSet).toHaveBeenCalledTimes(
+      resetAfter === 'logSet' || resetAfter === 'finish' ? 1 : 0,
+    );
+    expect(api.workouts.finish).toHaveBeenCalledTimes(resetAfter === 'finish' ? 1 : 0);
+    expect(store.calls.markSynced).toHaveLength(0);
+  });
+
   it('offers no update/delete push for workouts and body weights', async () => {
     const store = new FakeSyncStore();
     store.seed('workouts', dirtyLocalRow({ id: 'w1', operation: 'delete' }) as unknown as LocalRow);
@@ -190,6 +303,7 @@ describe('gymApi adapters', () => {
 
     expect(result.unsupported).toBe(2);
     expect(api.workouts.start).not.toHaveBeenCalled();
+    expect(api.workouts.finish).not.toHaveBeenCalled();
     expect(api.progress.logBodyWeight).not.toHaveBeenCalled();
   });
 

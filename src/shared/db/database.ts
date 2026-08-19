@@ -24,6 +24,23 @@ export interface SqlConnection {
   getAllSync<T>(source: string, ...params: SqlParam[]): T[];
 }
 
+const CLIENT_ID_TABLES = ['exercises', 'templates', 'workouts'] as const;
+
+interface SqlTableInfoRow {
+  name: string;
+}
+
+export function initializeLocalDb(conn: SqlConnection): void {
+  for (const table of CLIENT_ID_TABLES) {
+    const columns = conn.getAllSync<SqlTableInfoRow>(`PRAGMA table_info(${table})`);
+    if (columns.length > 0 && !columns.some((column) => column.name === 'client_id')) {
+      conn.execSync(`ALTER TABLE ${table} ADD COLUMN client_id TEXT`);
+    }
+  }
+
+  conn.execSync(SCHEMA_SQL);
+}
+
 export interface SyncColumns {
   is_dirty: number;
   operation: Operation | null;
@@ -412,13 +429,16 @@ export interface SyncStore {
   upsertRemote(table: SyncTable, row: ServerRow): void;
   getLastSyncedAt(): string | null;
   setLastSyncedAt(value: string): void;
+  getDataGeneration(): number;
 }
 
 export class LocalDb implements SyncStore {
+  private dataGeneration = 0;
+
   constructor(private readonly conn: SqlConnection) {}
 
   init(): void {
-    this.conn.execSync(SCHEMA_SQL);
+    initializeLocalDb(this.conn);
   }
 
   // -- exercises --------------------------------------------------------------
@@ -595,6 +615,7 @@ export class LocalDb implements SyncStore {
       const local = this.getExercise(localId);
       this.removeRow('exercises', localId);
       this.upsertRemoteExercise(server, local?.client_id ?? localId);
+      this.rekeyExerciseReferences(localId, server.id);
       return;
     }
     const row = exerciseToRaw(server);
@@ -612,6 +633,7 @@ export class LocalDb implements SyncStore {
       const local = this.getTemplate(localId);
       this.removeRow('templates', localId);
       this.upsertRemoteTemplate(server, local?.client_id ?? localId);
+      this.rekeyTemplateReferences(localId, server.id);
       return;
     }
     const row = templateToRaw(server);
@@ -640,6 +662,61 @@ export class LocalDb implements SyncStore {
       row.updated_at,
       localId,
     );
+  }
+
+  private rekeyExerciseReferences(localId: string, serverId: string): void {
+    for (const template of this.getTemplates()) {
+      const exercises = template.exercises?.map((item) =>
+        item.exercise_id === localId ? { ...item, exercise_id: serverId } : item,
+      );
+      if (!exercises?.some((item, index) => item !== template.exercises?.[index])) {
+        continue;
+      }
+      this.upsertTemplate(
+        { ...template, exercises },
+        {
+          client_id: template.client_id,
+          is_dirty: template.is_dirty,
+          operation: template.operation,
+          last_synced_at: template.last_synced_at,
+        },
+      );
+    }
+
+    for (const workout of this.getWorkouts()) {
+      const exercises = workout.exercises?.map((item) =>
+        item.exercise_id === localId ? { ...item, exercise_id: serverId } : item,
+      );
+      if (!exercises?.some((item, index) => item !== workout.exercises?.[index])) {
+        continue;
+      }
+      this.upsertWorkout(
+        { ...workout, exercises },
+        {
+          client_id: workout.client_id,
+          is_dirty: workout.is_dirty,
+          operation: workout.operation,
+          last_synced_at: workout.last_synced_at,
+        },
+      );
+    }
+  }
+
+  private rekeyTemplateReferences(localId: string, serverId: string): void {
+    for (const workout of this.getWorkouts()) {
+      if (workout.template_id !== localId) {
+        continue;
+      }
+      this.upsertWorkout(
+        { ...workout, template_id: serverId },
+        {
+          client_id: workout.client_id,
+          is_dirty: workout.is_dirty,
+          operation: workout.operation,
+          last_synced_at: workout.last_synced_at,
+        },
+      );
+    }
   }
 
   private markBodyWeightSynced(localId: string, server: BodyWeightEntry): void {
@@ -721,6 +798,46 @@ export class LocalDb implements SyncStore {
   setLastSyncedAt(value: string): void {
     this.conn.runSync(UPSERT_SYNC_STATE_SQL, value);
   }
+
+  clearPrivateData(): void {
+    this.conn.execSync(
+      [
+        'DELETE FROM exercises;',
+        'DELETE FROM templates;',
+        'DELETE FROM workouts;',
+        'DELETE FROM body_weights;',
+        'DELETE FROM progress_cache;',
+        'DELETE FROM sync_state;',
+      ].join('\n'),
+    );
+    this.dataGeneration += 1;
+  }
+
+  getDataGeneration(): number {
+    return this.dataGeneration;
+  }
+
+  // -- progress cache --------------------------------------------------------------
+  // Server-computed progress payloads (1RM, volume) are not pulled by the
+  // sync engine. Screens store the last successful fetch here so offline
+  // opens still have something to render; values are JSON strings.
+
+  getProgressCache(key: string): string | null {
+    const row = this.conn.getFirstSync<{ value: string }>(
+      'SELECT value FROM progress_cache WHERE key = ?',
+      key,
+    );
+    return row?.value ?? null;
+  }
+
+  setProgressCache(key: string, value: string): void {
+    this.conn.runSync(
+      'INSERT INTO progress_cache (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+      key,
+      value,
+      new Date().toISOString(),
+    );
+  }
 }
 
 export const DB_NAME = 'onerep.db';
@@ -738,7 +855,7 @@ function loadSqlite(): typeof import('expo-sqlite') {
 export function openLocalDb(): SqlConnection {
   const sqlite = loadSqlite();
   const conn = sqlite.openDatabaseSync(DB_NAME);
-  conn.execSync(SCHEMA_SQL);
+  initializeLocalDb(conn);
   return conn;
 }
 

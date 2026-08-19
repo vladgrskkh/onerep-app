@@ -11,6 +11,7 @@ import {
   mapWorkoutRow,
   templateToRaw,
   workoutToRaw,
+  initializeLocalDb,
   type ExerciseRawRow,
   type SqlConnection,
   type SqlParam,
@@ -361,6 +362,131 @@ describe('LocalDb', () => {
     expect(insert as unknown[]).toContain('local-e1');
   });
 
+  it('re-keys exercise references in pending templates and workouts', () => {
+    const db = new LocalDb(conn);
+    const localTemplate: TemplateRawRow = {
+      id: 't-local',
+      client_id: 'client-t',
+      name: 'Push day',
+      description: null,
+      is_public: 0,
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      version: 0,
+      exercises: JSON.stringify([{ exercise_id: 'local-e1', sort_order: 0, planned_sets: 3 }]),
+      media: null,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    const localWorkout = {
+      id: 'w-local',
+      client_id: 'client-w',
+      user_id: 'u1',
+      template_id: 't-local',
+      started_at: '2026-01-01T08:00:00Z',
+      finished_at: null,
+      notes: null,
+      exercises: JSON.stringify([
+        { id: 'we-local', exercise_id: 'local-e1', sort_order: 0, sets: [] },
+      ]),
+      created_at: '2026-01-01T08:00:00Z',
+      updated_at: '2026-01-01T08:00:00Z',
+      version: 0,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    mockConn().getFirstSync.mockReturnValue({
+      id: 'local-e1',
+      client_id: 'client-e1',
+      name: 'Squat',
+      description: null,
+      notes: null,
+      is_built_in: 0,
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      version: 0,
+      media: null,
+      muscle_groups: null,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    });
+    mockConn().getAllSync.mockImplementation((source: string) => {
+      if (source === 'SELECT * FROM templates') {
+        return [localTemplate];
+      }
+      if (source === 'SELECT * FROM workouts') {
+        return [localWorkout];
+      }
+      return [];
+    });
+
+    db.markSynced('exercises', 'local-e1', { ...exercise, id: 'server-e1' });
+
+    const run = mockConn().runSync;
+    const templateUpsert = run.mock.calls.find(([sql]) => String(sql).startsWith('INSERT INTO templates'));
+    const workoutUpsert = run.mock.calls.find(([sql]) => String(sql).startsWith('INSERT INTO workouts'));
+    expect(templateUpsert).toBeDefined();
+    expect(workoutUpsert).toBeDefined();
+    expect(templateUpsert as unknown[]).toContain(
+      JSON.stringify([{ exercise_id: 'server-e1', sort_order: 0, planned_sets: 3 }]),
+    );
+    expect(workoutUpsert as unknown[]).toContain(
+      JSON.stringify([{ id: 'we-local', exercise_id: 'server-e1', sort_order: 0, sets: [] }]),
+    );
+  });
+
+  it('re-keys the template_id on pending workouts', () => {
+    const db = new LocalDb(conn);
+    const localTemplate: TemplateRawRow = {
+      id: 't-local',
+      client_id: 'client-t',
+      name: 'Push day',
+      description: null,
+      is_public: 0,
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      version: 0,
+      exercises: null,
+      media: null,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    const localWorkout = {
+      id: 'w-local',
+      client_id: 'client-w',
+      user_id: 'u1',
+      template_id: 't-local',
+      started_at: '2026-01-01T08:00:00Z',
+      finished_at: null,
+      notes: null,
+      exercises: null,
+      created_at: '2026-01-01T08:00:00Z',
+      updated_at: '2026-01-01T08:00:00Z',
+      version: 0,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    mockConn().getFirstSync.mockReturnValue(localTemplate);
+    mockConn().getAllSync.mockImplementation((source: string) =>
+      source === 'SELECT * FROM workouts' ? [localWorkout] : [],
+    );
+
+    db.markSynced('templates', 't-local', { ...template, id: 'server-t1' });
+
+    const run = mockConn().runSync;
+    const workoutUpsert = run.mock.calls.find(([sql]) => String(sql).startsWith('INSERT INTO workouts'));
+    expect(workoutUpsert).toBeDefined();
+    expect(workoutUpsert as unknown[]).toContain('server-t1');
+  });
+
   it('upsertRemote uses conflict-clause protected by is_dirty = 0 and preserves client_id', () => {
     const db = new LocalDb(conn);
     db.upsertRemote('exercises', exercise);
@@ -399,6 +525,47 @@ describe('LocalDb', () => {
   it('getLastSyncedAt returns null when no state stored', () => {
     const db = new LocalDb(conn);
     expect(db.getLastSyncedAt()).toBeNull();
+  });
+
+  it('clears all account-private cache tables and advances the data generation', () => {
+    const db = new LocalDb(conn);
+
+    expect(db.getDataGeneration()).toBe(0);
+
+    db.clearPrivateData();
+
+    expect(mockConn().execSync).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM exercises;'),
+    );
+    const purgeSql = mockConn().execSync.mock.calls[0][0] as string;
+    for (const table of ['templates', 'workouts', 'body_weights', 'progress_cache', 'sync_state']) {
+      expect(purgeSql).toContain(`DELETE FROM ${table};`);
+    }
+    expect(db.getDataGeneration()).toBe(1);
+  });
+
+  it('setProgressCache upserts a JSON payload and getProgressCache reads it back', () => {
+    const db = new LocalDb(conn);
+    db.setProgressCache('progress:1rm:e1', '[{"date":"2026-01-01","estimated_1rm":100}]');
+
+    expect(mockConn().runSync).toHaveBeenCalledWith(
+      'INSERT INTO progress_cache (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+      'progress:1rm:e1',
+      '[{"date":"2026-01-01","estimated_1rm":100}]',
+      expect.any(String),
+    );
+
+    mockConn().getFirstSync.mockReturnValue({ value: '[{"estimated_1rm":100}]' });
+    expect(db.getProgressCache('progress:1rm:e1')).toBe('[{"estimated_1rm":100}]');
+    expect(mockConn().getFirstSync).toHaveBeenCalledWith(
+      'SELECT value FROM progress_cache WHERE key = ?',
+      'progress:1rm:e1',
+    );
+  });
+
+  it('getProgressCache returns null when nothing is cached', () => {
+    const db = new LocalDb(conn);
+    expect(db.getProgressCache('progress:volume')).toBeNull();
   });
 
   it('upsertBodyWeight serializes a weight entry and marks it dirty on create', () => {
@@ -464,5 +631,52 @@ describe('LocalDb', () => {
       'SELECT * FROM templates WHERE client_id = ?',
       'client-t1',
     );
+  });
+});
+
+describe('initializeLocalDb', () => {
+  it('adds missing client_id columns before applying the schema', () => {
+    const conn = makeConnection({
+      getAllSync: jest.fn((source: string) => {
+        if (source === 'PRAGMA table_info(exercises)') {
+          return [{ name: 'id' }];
+        }
+        if (source === 'PRAGMA table_info(templates)') {
+          return [{ name: 'id' }, { name: 'client_id' }];
+        }
+        if (source === 'PRAGMA table_info(workouts)') {
+          return [{ name: 'id' }];
+        }
+        return [];
+      }) as unknown as SqlConnection['getAllSync'],
+    });
+
+    initializeLocalDb(conn);
+
+    expect((conn.execSync as jest.Mock).mock.calls).toEqual([
+      ['ALTER TABLE exercises ADD COLUMN client_id TEXT'],
+      ['ALTER TABLE workouts ADD COLUMN client_id TEXT'],
+      [SCHEMA_SQL],
+    ]);
+  });
+
+  it('does not alter current tables that already have client_id', () => {
+    const conn = makeConnection({
+      getAllSync: jest.fn(() => [{ name: 'id' }, { name: 'client_id' }]) as unknown as SqlConnection['getAllSync'],
+    });
+
+    initializeLocalDb(conn);
+
+    expect(conn.execSync).toHaveBeenCalledTimes(1);
+    expect(conn.execSync).toHaveBeenCalledWith(SCHEMA_SQL);
+  });
+
+  it('does not alter tables that do not exist yet on a fresh database', () => {
+    const conn = makeConnection({ getAllSync: jest.fn(() => []) });
+
+    initializeLocalDb(conn);
+
+    expect(conn.execSync).toHaveBeenCalledTimes(1);
+    expect(conn.execSync).toHaveBeenCalledWith(SCHEMA_SQL);
   });
 });
