@@ -31,9 +31,11 @@ export interface SyncTableAdapter {
   isConflict: (error: unknown) => boolean;
 }
 
-type PushHandler = (
+type GenerationGuard = () => boolean;
+
+export type PushHandler = (
   row: LocalRow,
-  isCurrentGeneration?: () => boolean,
+  isCurrentGeneration: GenerationGuard,
 ) => Promise<ServerRow | void | null>;
 
 export interface SyncError {
@@ -201,10 +203,7 @@ export class SyncEngine {
     }
 
     try {
-      const server =
-        adapter.table === 'workouts'
-          ? await handler(row, () => this.isCurrentGeneration(generation))
-          : await handler(row);
+      const server = await handler(row, () => this.isCurrentGeneration(generation));
       if (!this.isCurrentGeneration(generation)) {
         return;
       }
@@ -217,6 +216,9 @@ export class SyncEngine {
       }
       result.pushed += 1;
     } catch (error) {
+      if (!this.isCurrentGeneration(generation)) {
+        return;
+      }
       if (adapter.isConflict(error)) {
         result.conflicts += 1;
         result.droppedChangeIds.push(`${adapter.table}:${row.id}`);
@@ -251,6 +253,9 @@ export class SyncEngine {
         this.store.upsertRemote(adapter.table, server);
       }
     } catch (error) {
+      if (!this.isCurrentGeneration(generation)) {
+        return;
+      }
       result.errors.push({
         table: adapter.table,
         id: row.id,
@@ -315,6 +320,17 @@ function logSetRequest(set: WorkoutSet): LogSetRequest {
   };
 }
 
+async function pushWithGeneration<T>(
+  request: () => Promise<T>,
+  isCurrentGeneration: GenerationGuard,
+): Promise<T | null> {
+  if (!isCurrentGeneration()) {
+    return null;
+  }
+  const response = await request();
+  return isCurrentGeneration() ? response : null;
+}
+
 async function fetchOrNull<T>(request: () => Promise<T>): Promise<T | null> {
   try {
     return await request();
@@ -330,12 +346,21 @@ const exercisesAdapter: SyncTableAdapter = {
   table: 'exercises',
   pull: (since) => gymApi.exercises.list(since ? { since } : undefined),
   fetchOne: (id) => fetchOrNull(() => gymApi.exercises.get(id)),
-  pushCreate: async (row) =>
-    gymApi.exercises.create(exerciseCreateRequest(row as ExerciseLocalRow)),
-  pushUpdate: async (row) =>
-    gymApi.exercises.update((row as ExerciseLocalRow).id, exerciseUpdateRequest(row as ExerciseLocalRow)),
-  pushDelete: async (row) => {
-    await gymApi.exercises.delete((row as ExerciseLocalRow).id);
+  pushCreate: (row, isCurrentGeneration) =>
+    pushWithGeneration(
+      () => gymApi.exercises.create(exerciseCreateRequest(row as ExerciseLocalRow)),
+      isCurrentGeneration,
+    ),
+  pushUpdate: (row, isCurrentGeneration) =>
+    pushWithGeneration(
+      () => gymApi.exercises.update((row as ExerciseLocalRow).id, exerciseUpdateRequest(row as ExerciseLocalRow)),
+      isCurrentGeneration,
+    ),
+  pushDelete: async (row, isCurrentGeneration) => {
+    await pushWithGeneration(
+      () => gymApi.exercises.delete((row as ExerciseLocalRow).id),
+      isCurrentGeneration,
+    );
   },
   isConflict: isConflictError,
 };
@@ -344,12 +369,21 @@ const templatesAdapter: SyncTableAdapter = {
   table: 'templates',
   pull: (since) => gymApi.templates.list(since ? { since } : undefined),
   fetchOne: (id) => fetchOrNull(() => gymApi.templates.get(id)),
-  pushCreate: async (row) =>
-    gymApi.templates.create(templateCreateRequest(row as TemplateLocalRow)),
-  pushUpdate: async (row) =>
-    gymApi.templates.update((row as TemplateLocalRow).id, templateUpdateRequest(row as TemplateLocalRow)),
-  pushDelete: async (row) => {
-    await gymApi.templates.delete((row as TemplateLocalRow).id);
+  pushCreate: (row, isCurrentGeneration) =>
+    pushWithGeneration(
+      () => gymApi.templates.create(templateCreateRequest(row as TemplateLocalRow)),
+      isCurrentGeneration,
+    ),
+  pushUpdate: (row, isCurrentGeneration) =>
+    pushWithGeneration(
+      () => gymApi.templates.update((row as TemplateLocalRow).id, templateUpdateRequest(row as TemplateLocalRow)),
+      isCurrentGeneration,
+    ),
+  pushDelete: async (row, isCurrentGeneration) => {
+    await pushWithGeneration(
+      () => gymApi.templates.delete((row as TemplateLocalRow).id),
+      isCurrentGeneration,
+    );
   },
   isConflict: isConflictError,
 };
@@ -419,12 +453,16 @@ const bodyWeightsAdapter: SyncTableAdapter = {
   table: 'body_weights',
   pull: (since) => gymApi.progress.getBodyWeight(since ? { since } : undefined),
   fetchOne: async () => null,
-  pushCreate: async (row) => {
+  pushCreate: async (row, isCurrentGeneration) => {
     const entry = row as BodyWeightLocalRow;
-    return gymApi.progress.logBodyWeight({
-      weight_kg: entry.weight_kg,
-      measured_at: entry.measured_at,
-    });
+    return pushWithGeneration(
+      () =>
+        gymApi.progress.logBodyWeight({
+          weight_kg: entry.weight_kg,
+          measured_at: entry.measured_at,
+        }),
+      isCurrentGeneration,
+    );
   },
   isConflict: isConflictError,
 };

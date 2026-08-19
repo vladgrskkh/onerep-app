@@ -57,6 +57,7 @@ describe('SyncEngine.pushLocal', () => {
 
     expect(adapter.pushCreate).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'e1', operation: 'create' }),
+      expect.any(Function),
     );
     expect(store.calls.markSynced).toEqual([['exercises', 'e1', expect.objectContaining({ id: 'server-e1' })]]);
     expect(result.pushed).toBe(1);
@@ -69,7 +70,7 @@ describe('SyncEngine.pushLocal', () => {
 
     const result = await engine.pushLocal();
 
-    expect(adapter.pushUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }));
+    expect(adapter.pushUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }), expect.any(Function));
     expect(adapter.pushCreate).not.toHaveBeenCalled();
     expect(result.pushed).toBe(1);
   });
@@ -80,7 +81,7 @@ describe('SyncEngine.pushLocal', () => {
 
     const result = await engine.pushLocal();
 
-    expect(adapter.pushDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }));
+    expect(adapter.pushDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }), expect.any(Function));
     expect(store.calls.removeRow).toEqual([['exercises', 'e1']]);
     expect(result.pushed).toBe(1);
   });
@@ -199,6 +200,32 @@ describe('SyncEngine.pushLocal', () => {
     expect(store.calls.markSynced).toHaveLength(0);
     expect(adapter.pull).toHaveBeenCalledTimes(1);
     expect(store.getLastSyncedAt()).not.toBeNull();
+  });
+
+  it('passes the generation guard to non-workout pushes before applying a stale response', async () => {
+    let continuedAfterReset = false;
+    const adapter = makeAdapter('exercises', {
+      pushCreate: jest.fn(async (_row: LocalRow, isCurrentGeneration: () => boolean) => {
+        store.clearPrivateData();
+        if (!isCurrentGeneration()) {
+          return null;
+        }
+        continuedAfterReset = true;
+        return serverRow({ id: 'server-e1' });
+      }),
+    });
+    store.seed('exercises', dirtyLocalRow({ id: 'e1', operation: 'create' }));
+    const engine = makeEngine(store, [adapter]);
+
+    const result = await engine.pushLocal();
+
+    expect(adapter.pushCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'e1', operation: 'create' }),
+      expect.any(Function),
+    );
+    expect(continuedAfterReset).toBe(false);
+    expect(store.calls.markSynced).toHaveLength(0);
+    expect(result.pushed).toBe(0);
   });
 
   it('skips rows whose operation has no API support and keeps them dirty', async () => {
