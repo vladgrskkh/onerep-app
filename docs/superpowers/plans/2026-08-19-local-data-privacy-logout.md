@@ -28,10 +28,10 @@
 - Produce `LocalDb.clearPrivateData(): void`, which deletes every local data table and sync state, and increments a store generation.
 - Produce `SyncStore.getDataGeneration(): number` for sync callers to detect a reset.
 
-- [ ] Write a failing test that verifies reset executes deletes for `exercises`, `templates`, `workouts`, `body_weights`, `progress_cache`, and `sync_state`, and advances the generation.
-- [ ] Run the focused database test and confirm it fails because the reset API is absent.
-- [ ] Implement the minimal reset method and store-generation accessor.
-- [ ] Run the focused database test and confirm it passes.
+- [x] Write a failing test that verifies reset executes deletes for `exercises`, `templates`, `workouts`, `body_weights`, `progress_cache`, and `sync_state`, and advances the generation.
+- [x] Run the focused database test and confirm it fails because the reset API is absent.
+- [x] Implement the minimal reset method and store-generation accessor.
+- [x] Run the focused database test and confirm it passes.
 
 ### Task 2: Make in-flight sync reset-safe
 
@@ -45,10 +45,10 @@
 - If generation changes while a push/pull is awaiting network I/O, the old run skips subsequent API/store work and cannot write rows or `last_synced_at`.
 - A new generation does not reuse an old in-flight promise.
 
-- [ ] Write a failing regression test that resets the fake store while a push is awaiting, then proves the old result cannot mark or reinsert rows and the next sync is independent.
-- [ ] Run the focused sync test and confirm it fails with the old row being written/reused.
-- [ ] Implement generation checks at sync boundaries and update the fake store.
-- [ ] Run focused sync tests and confirm they pass.
+- [x] Write a failing regression test that resets the fake store while a push is awaiting, then proves the old result cannot mark or reinsert rows and the next sync is independent.
+- [x] Run the focused sync test and confirm it fails with the old row being written/reused.
+- [x] Implement generation checks at sync boundaries and update the fake store.
+- [x] Run focused sync tests and confirm they pass.
 
 ### Task 3: Purge local data as part of auth sign-out
 
@@ -59,18 +59,18 @@
 **Interfaces:**
 - Auth token clearing also invokes `getLocalDb().clearPrivateData()` so explicit logout and invalid-session cleanup share the same privacy boundary.
 
-- [ ] Write a failing auth regression test with a mocked local DB proving logout calls the purge and account-private rows are not available to the next login.
-- [ ] Run the focused auth test and confirm it fails because logout only clears SecureStore.
-- [ ] Implement the minimal AuthContext integration, preserving best-effort server logout behavior.
-- [ ] Run focused auth, database, and sync tests; confirm all pass.
+- [x] Write a failing auth regression test with a mocked local DB proving logout calls the purge and account-private rows are not available to the next login.
+- [x] Run the focused auth test and confirm it fails because logout only clears SecureStore.
+- [x] Implement the minimal AuthContext integration, preserving best-effort server logout behavior.
+- [x] Run focused auth, database, and sync tests; confirm all pass.
 
 ### Task 4: Full verification and commit
 
 **Files:**
 - Verify only; no additional source changes unless a test/type/lint failure requires a scoped correction.
 
-- [ ] Run focused regression tests.
-- [ ] Run `npm run lint`.
-- [ ] Run `npm run typecheck` (or the repository-equivalent command if the script is absent).
-- [ ] Review `git diff` and status for scope and accidental files.
-- [ ] Commit with `fix: clear account data on logout`.
+- [x] Run focused regression tests.
+- [x] Run `npm run lint`.
+- [x] Run `npm run typecheck` (or the repository-equivalent command if the script is absent).
+- [x] Review `git diff` and status for scope and accidental files.
+- [x] Commit with `fix: clear account data on logout`.
