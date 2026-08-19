@@ -28,6 +28,7 @@ jest.mock('../../api/gym', () => ({
       get: jest.fn(async () => ({ id: 'w1' })),
       addExercise: jest.fn(async () => ({ id: 'we-server' })),
       logSet: jest.fn(async () => ({ id: 's-server' })),
+      finish: jest.fn(async () => ({ id: 'w1', finished_at: '2026-01-01T10:00:00Z' })),
     },
     progress: {
       getBodyWeight: jest.fn(async () => []),
@@ -175,6 +176,35 @@ describe('gymApi adapters', () => {
     });
     expect(store.calls.markSynced).toEqual([
       ['workouts', 'w-local', expect.objectContaining({ id: 'server-w1' })],
+    ]);
+  });
+
+  it('replays a locally finished workout create as finished', async () => {
+    const store = new FakeSyncStore();
+    api.workouts.start.mockResolvedValue(serverRow({ id: 'server-w1' }));
+    api.workouts.addExercise.mockResolvedValue({ id: 'we-server' });
+    api.workouts.finish.mockResolvedValue(
+      serverRow({ id: 'server-w1', finished_at: '2026-01-01T10:00:00Z' }),
+    );
+    store.seed(
+      'workouts',
+      dirtyLocalRow({
+        id: 'w-local',
+        operation: 'create',
+        template_id: 't1',
+        finished_at: '2026-01-01T10:00:00Z',
+      }) as unknown as LocalRow,
+    );
+
+    await createGymSyncEngine(store).sync();
+
+    expect(api.workouts.finish).toHaveBeenCalledWith('server-w1');
+    expect(store.calls.markSynced).toEqual([
+      [
+        'workouts',
+        'w-local',
+        expect.objectContaining({ id: 'server-w1', finished_at: '2026-01-01T10:00:00Z' }),
+      ],
     ]);
   });
 

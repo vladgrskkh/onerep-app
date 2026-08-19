@@ -361,6 +361,131 @@ describe('LocalDb', () => {
     expect(insert as unknown[]).toContain('local-e1');
   });
 
+  it('re-keys exercise references in pending templates and workouts', () => {
+    const db = new LocalDb(conn);
+    const localTemplate: TemplateRawRow = {
+      id: 't-local',
+      client_id: 'client-t',
+      name: 'Push day',
+      description: null,
+      is_public: 0,
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      version: 0,
+      exercises: JSON.stringify([{ exercise_id: 'local-e1', sort_order: 0, planned_sets: 3 }]),
+      media: null,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    const localWorkout = {
+      id: 'w-local',
+      client_id: 'client-w',
+      user_id: 'u1',
+      template_id: 't-local',
+      started_at: '2026-01-01T08:00:00Z',
+      finished_at: null,
+      notes: null,
+      exercises: JSON.stringify([
+        { id: 'we-local', exercise_id: 'local-e1', sort_order: 0, sets: [] },
+      ]),
+      created_at: '2026-01-01T08:00:00Z',
+      updated_at: '2026-01-01T08:00:00Z',
+      version: 0,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    mockConn().getFirstSync.mockReturnValue({
+      id: 'local-e1',
+      client_id: 'client-e1',
+      name: 'Squat',
+      description: null,
+      notes: null,
+      is_built_in: 0,
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      version: 0,
+      media: null,
+      muscle_groups: null,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    });
+    mockConn().getAllSync.mockImplementation((source: string) => {
+      if (source === 'SELECT * FROM templates') {
+        return [localTemplate];
+      }
+      if (source === 'SELECT * FROM workouts') {
+        return [localWorkout];
+      }
+      return [];
+    });
+
+    db.markSynced('exercises', 'local-e1', { ...exercise, id: 'server-e1' });
+
+    const run = mockConn().runSync;
+    const templateUpsert = run.mock.calls.find(([sql]) => String(sql).startsWith('INSERT INTO templates'));
+    const workoutUpsert = run.mock.calls.find(([sql]) => String(sql).startsWith('INSERT INTO workouts'));
+    expect(templateUpsert).toBeDefined();
+    expect(workoutUpsert).toBeDefined();
+    expect(templateUpsert as unknown[]).toContain(
+      JSON.stringify([{ exercise_id: 'server-e1', sort_order: 0, planned_sets: 3 }]),
+    );
+    expect(workoutUpsert as unknown[]).toContain(
+      JSON.stringify([{ id: 'we-local', exercise_id: 'server-e1', sort_order: 0, sets: [] }]),
+    );
+  });
+
+  it('re-keys the template_id on pending workouts', () => {
+    const db = new LocalDb(conn);
+    const localTemplate: TemplateRawRow = {
+      id: 't-local',
+      client_id: 'client-t',
+      name: 'Push day',
+      description: null,
+      is_public: 0,
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      version: 0,
+      exercises: null,
+      media: null,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    const localWorkout = {
+      id: 'w-local',
+      client_id: 'client-w',
+      user_id: 'u1',
+      template_id: 't-local',
+      started_at: '2026-01-01T08:00:00Z',
+      finished_at: null,
+      notes: null,
+      exercises: null,
+      created_at: '2026-01-01T08:00:00Z',
+      updated_at: '2026-01-01T08:00:00Z',
+      version: 0,
+      is_dirty: 1,
+      operation: 'create',
+      last_synced_at: null,
+    };
+    mockConn().getFirstSync.mockReturnValue(localTemplate);
+    mockConn().getAllSync.mockImplementation((source: string) =>
+      source === 'SELECT * FROM workouts' ? [localWorkout] : [],
+    );
+
+    db.markSynced('templates', 't-local', { ...template, id: 'server-t1' });
+
+    const run = mockConn().runSync;
+    const workoutUpsert = run.mock.calls.find(([sql]) => String(sql).startsWith('INSERT INTO workouts'));
+    expect(workoutUpsert).toBeDefined();
+    expect(workoutUpsert as unknown[]).toContain('server-t1');
+  });
+
   it('upsertRemote uses conflict-clause protected by is_dirty = 0 and preserves client_id', () => {
     const db = new LocalDb(conn);
     db.upsertRemote('exercises', exercise);
