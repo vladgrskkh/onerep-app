@@ -134,9 +134,9 @@ function press(instance: ReturnType<typeof create>, testID: string) {
 }
 
 async function flushAsync() {
-  for (let i = 0; i < 20; i++) {
-    await Promise.resolve();
-  }
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 function makeJwt(userId: string): string {
